@@ -12,7 +12,8 @@ out of the way of your game's frame time and memory.
 - Runs alongside the official client: keep Discord closed while you play, or use it for text.
 
 > **Status:** early development. The live server and voice channel list and the moderation menu work.
-> Joining voice channels and listening is implemented but not yet verified against Discord.
+> Voice (joining, listening, talking with push-to-talk or voice activity) is implemented but not yet
+> verified against Discord.
 
 > **Disclaimer:** bardo is not affiliated with or endorsed by Discord. Using a user account from an
 > unofficial client is against Discord's Terms of Service and may get the account banned. Use at your own risk.
@@ -70,9 +71,10 @@ Threads: a tokio runtime for networking, dedicated real-time threads for audio, 
    mute are stored and take effect once audio lands)*
 3. Voice — receive: join and listen (validates DAVE). *(implemented: click a channel to join; needs a live
    test)*
-4. Voice — send: microphone, PTT, VAD.
+4. Voice — send: microphone, PTT, VAD. *(implemented: device selection, push-to-talk key, voice
+   activity threshold with a level meter; needs a live test)*
 5. DM / group calls.
-6. Polish: RNNoise, per-user volume, hotkeys, tray.
+6. Polish: tray, global mute/deafen hotkeys. *(done early: RNNoise, per-user volume, deafened icon)*
 
 ## Build
 
@@ -82,6 +84,7 @@ Requirements: Rust stable (MSVC), Visual Studio Build Tools with C++ and the Win
 cargo run -p bardo
 cargo test --workspace
 cargo run -p bardo-audio --example tone   # plays a short tone to check audio output
+cargo run -p bardo-audio --example mic    # prints the microphone level for a few seconds
 ```
 
 ## Signing in
@@ -101,7 +104,9 @@ The token grants full access to the account: never share it or commit it.
 | `RUST_LOG` | Log filter, e.g. `info,bardo_gateway=debug`. Debug builds log to the console. `songbird=debug` shows the voice handshake. |
 | `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account. |
 
-Per-user volume and local mutes are stored in `%APPDATA%\bardo\settings.json`.
+Voice settings, per-user volume and local mutes are stored in `%APPDATA%\bardo\settings.json`.
+
+The push-to-talk key is read by polling the keyboard state, so the key still reaches the game.
 
 ## References
 

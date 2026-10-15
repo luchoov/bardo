@@ -1,4 +1,4 @@
-import { Button, LineEdit, ListView, Slider } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Slider } from "std-widgets.slint";
 
 export enum RowKind { guild, channel, participant }
 
@@ -77,6 +77,19 @@ global Glyph {
     out property <string> mic-off: "\u{EC54}";
     out property <string> headphones: "\u{E7F6}";
     out property <string> hang-up: "\u{E778}";
+    out property <string> settings: "\u{E713}";
+}
+
+// The voice settings sheet's state.
+export struct VoiceSettingsView {
+    inputs: [string],
+    outputs: [string],
+    input-index: int,
+    output-index: int,
+    push-to-talk: bool,
+    key-name: string,
+    capturing-key: bool,
+    noise-suppression: bool,
 }
 
 component Icon inherits Text {
@@ -382,8 +395,20 @@ component IconButton inherits Rectangle {
 
 component VoiceBarView inherits Rectangle {
     in property <VoiceBar> voice;
+    in property <bool> settings-open;
+    in property <VoiceSettingsView> voice-settings;
+    in-out property <float> threshold;
+    in property <float> input-level;
     callback toggle-mute();
     callback toggle-deafen();
+    callback open-settings();
+    callback close-settings();
+    callback select-input(int);
+    callback select-output(int);
+    callback set-push-to-talk(bool);
+    callback capture-key();
+    callback set-threshold(float);
+    callback set-noise-suppression(bool);
     callback leave();
 
     background: Theme.card;
@@ -422,6 +447,131 @@ component VoiceBarView inherits Rectangle {
             glyph: Glyph.hang-up;
             active: true;
             clicked => { root.leave(); }
+        }
+    }
+}
+
+component Label inherits Text {
+    color: Theme.muted-text;
+    font-size: 11px;
+}
+
+// Voice settings: devices, voice activity or push-to-talk, noise suppression.
+component SettingsSheet inherits Rectangle {
+    in property <VoiceSettingsView> view;
+    in-out property <float> threshold;
+    // Input level in dBFS, refreshed while the sheet is open.
+    in property <float> level;
+    in property <bool> in-voice;
+    callback select-input(int);
+    callback select-output(int);
+    callback set-push-to-talk(bool);
+    callback capture-key();
+    callback set-threshold(float);
+    callback set-noise-suppression(bool);
+    callback close();
+
+    background: Theme.scrim;
+    TouchArea {
+        clicked => { root.close(); }
+    }
+    Rectangle {
+        x: 12px;
+        width: parent.width - 24px;
+        height: min(layout.preferred-height, parent.height - 24px);
+        y: parent.height - self.height - 12px;
+        background: Theme.card;
+        border-radius: 8px;
+        clip: true;
+        // Keeps clicks on the card from closing the sheet.
+        TouchArea { }
+        layout := VerticalLayout {
+            padding: 14px;
+            spacing: 6px;
+            Text {
+                text: "Voice settings";
+                color: Theme.text;
+                font-weight: 600;
+            }
+            Label { text: "Input device"; }
+            ComboBox {
+                model: root.view.inputs;
+                current-index: root.view.input-index;
+                selected => { root.select-input(self.current-index); }
+            }
+            Label { text: "Output device"; }
+            ComboBox {
+                model: root.view.outputs;
+                current-index: root.view.output-index;
+                selected => { root.select-output(self.current-index); }
+            }
+            Label { text: "Input mode"; }
+            ComboBox {
+                model: ["Voice activity", "Push to talk"];
+                current-index: root.view.push-to-talk ? 1 : 0;
+                selected => { root.set-push-to-talk(self.current-index == 1); }
+            }
+            if root.view.push-to-talk: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.view.capturing-key ? "Press a key or mouse button… (Esc cancels)"
+                        : root.view.key-name == "" ? "No key set" : "Key: " + root.view.key-name;
+                    color: root.view.capturing-key ? Theme.warn : Theme.text;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                Button {
+                    text: "Set key";
+                    enabled: !root.view.capturing-key;
+                    clicked => { root.capture-key(); }
+                }
+            }
+            if !root.view.push-to-talk: VerticalLayout {
+                spacing: 4px;
+                Label {
+                    text: "Sensitivity: " + round(root.threshold) + " dB"
+                        + (root.in-voice ? "" : " (join a channel to see your level)");
+                }
+                Rectangle {
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.background;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * clamp((root.level + 100) / 100, 0, 1);
+                        border-radius: 3px;
+                        background: root.level >= root.threshold ? Theme.ok : Theme.muted-text;
+                    }
+                    Rectangle {
+                        x: parent.width * clamp((root.threshold + 100) / 100, 0, 1) - 1px;
+                        width: 2px;
+                        background: Theme.warn;
+                    }
+                }
+                Slider {
+                    minimum: -100;
+                    maximum: 0;
+                    value <=> root.threshold;
+                    changed(value) => {
+                        root.threshold = round(value);
+                        root.set-threshold(root.threshold);
+                    }
+                }
+            }
+            CheckBox {
+                text: "Noise suppression";
+                checked: root.view.noise-suppression;
+                toggled => { root.set-noise-suppression(self.checked); }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Done";
+                    primary: true;
+                    clicked => { root.close(); }
+                }
+            }
         }
     }
 }
@@ -480,6 +630,10 @@ export component MainWindow inherits Window {
     in property <string> volume-name;
     in-out property <float> volume-value;
     in property <VoiceBar> voice;
+    in property <bool> settings-open;
+    in property <VoiceSettingsView> voice-settings;
+    in-out property <float> threshold;
+    in property <float> input-level;
     callback sign-in(string);
     callback sign-out();
     callback toggle-guild(string);
@@ -496,6 +650,14 @@ export component MainWindow inherits Window {
     callback leave-voice();
     callback toggle-mute();
     callback toggle-deafen();
+    callback open-settings();
+    callback close-settings();
+    callback select-input(int);
+    callback select-output(int);
+    callback set-push-to-talk(bool);
+    callback capture-key();
+    callback set-threshold(float);
+    callback set-noise-suppression(bool);
 
     title: "bardo";
     preferred-width: 340px;
@@ -529,6 +691,10 @@ export component MainWindow inherits Window {
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
+            }
+            IconButton {
+                glyph: Glyph.settings;
+                clicked => { root.open-settings(); }
             }
             Button {
                 text: "Sign out";
@@ -596,6 +762,22 @@ export component MainWindow inherits Window {
             toggle-deafen => { root.toggle-deafen(); }
             leave => { root.leave-voice(); }
         }
+    }
+
+    if root.screen == 1 && root.settings-open: SettingsSheet {
+        width: parent.width;
+        height: parent.height;
+        view: root.voice-settings;
+        threshold <=> root.threshold;
+        level: root.input-level;
+        in-voice: root.voice.active;
+        select-input(index) => { root.select-input(index); }
+        select-output(index) => { root.select-output(index); }
+        set-push-to-talk(on) => { root.set-push-to-talk(on); }
+        capture-key => { root.capture-key(); }
+        set-threshold(value) => { root.set-threshold(value); }
+        set-noise-suppression(on) => { root.set-noise-suppression(on); }
+        close => { root.close-settings(); }
     }
 
     if root.screen == 1 && root.volume-user != "": VolumeSheet {

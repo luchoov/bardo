@@ -1,6 +1,7 @@
 use std::{collections::HashSet, sync::Arc, thread};
 
 use bardo_api::{Http, MemberChange};
+use bardo_audio::TransmitControl;
 use bardo_gateway::{
     CAPABILITIES, Config, ConnectionState, Event, Gateway, Id, Notification, RequestGuildMembers,
 };
@@ -11,7 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     snapshot::Snapshot,
     store::Store,
-    voice::{Outcome, UserAudio, VoiceDriver, VoiceSession},
+    voice::{AudioDevices, Outcome, UserAudio, VoiceDriver, VoiceSession},
 };
 
 /// Op 8 accepts at most 100 user ids per request.
@@ -40,6 +41,7 @@ pub enum Command {
     SetSelfDeaf(bool),
     /// How a user sounds to us.
     SetUserAudio { user_id: Id, audio: UserAudio },
+    SetAudioDevices(AudioDevices),
 }
 
 /// Results of background work, reported back to the client task.
@@ -58,8 +60,13 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects with `token`. `on_event` is called from the client's thread.
-    pub fn start(token: String, on_event: impl Fn(ClientEvent) + Send + 'static) -> Self {
+    /// Connects with `token`. `transmit` holds the microphone settings and push-to-talk state;
+    /// `on_event` is called from the client's thread.
+    pub fn start(
+        token: String,
+        transmit: Arc<TransmitControl>,
+        on_event: impl Fn(ClientEvent) + Send + 'static,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let spawned = thread::Builder::new().name("bardo-client".into()).spawn(move || {
@@ -74,7 +81,7 @@ impl Client {
                     return;
                 }
             };
-            runtime.block_on(run(token, on_event, commands_rx, shutdown_rx));
+            runtime.block_on(run(token, transmit, on_event, commands_rx, shutdown_rx));
         });
         if let Err(e) = spawned {
             error!("failed to spawn client thread: {e}");
@@ -98,6 +105,7 @@ impl Drop for Client {
 
 async fn run(
     token: String,
+    transmit: Arc<TransmitControl>,
     on_event: impl Fn(ClientEvent),
     mut commands: mpsc::UnboundedReceiver<Command>,
     mut shutdown: oneshot::Receiver<()>,
@@ -123,7 +131,7 @@ async fn run(
     // Background tasks report back through this channel, so `on_event` is only called from here.
     let (internal_tx, mut internal) = mpsc::unbounded_channel();
 
-    let mut session = Session::new(internal_tx.clone());
+    let mut session = Session::new(internal_tx.clone(), transmit);
     loop {
         let first = tokio::select! {
             _ = &mut shutdown => break,
@@ -177,18 +185,23 @@ struct Session {
     session_id: String,
     voice: VoiceSession,
     driver: VoiceDriver,
+    /// Users heard speaking, and whether we are sending, for the speaking indicator.
+    remote_speaking: Vec<Id>,
+    transmitting: bool,
     /// READY_SUPPLEMENTAL carries the members of everyone in voice; wait for it before asking for more.
     supplemental_received: bool,
     requested_members: HashSet<(Id, Id)>,
 }
 
 impl Session {
-    fn new(internal: mpsc::UnboundedSender<Internal>) -> Self {
+    fn new(internal: mpsc::UnboundedSender<Internal>, transmit: Arc<TransmitControl>) -> Self {
         Self {
             store: Store::default(),
             session_id: String::new(),
             voice: VoiceSession::default(),
-            driver: VoiceDriver::new(internal),
+            driver: VoiceDriver::new(internal, transmit),
+            remote_speaking: Vec::new(),
+            transmitting: false,
             supplemental_received: false,
             requested_members: HashSet::new(),
         }
@@ -198,6 +211,16 @@ impl Session {
         let mut snapshot = Snapshot::build(&self.store);
         snapshot.voice = self.voice.view(&self.store);
         on_event(ClientEvent::Snapshot(Arc::new(snapshot)));
+    }
+
+    fn publish_speaking(&self, on_event: &impl Fn(ClientEvent)) {
+        let mut speaking = self.remote_speaking.clone();
+        if self.transmitting
+            && let Some(me) = &self.store.me
+        {
+            speaking.push(me.id);
+        }
+        on_event(ClientEvent::Speaking(speaking));
     }
 
     /// Carries out what the voice state machine decided, then reports the outcome to the UI.
@@ -244,7 +267,13 @@ impl Session {
                 return;
             }
             Internal::Voice(VoiceEvent::Speaking(users)) => {
-                on_event(ClientEvent::Speaking(users));
+                self.remote_speaking = users;
+                self.publish_speaking(on_event);
+                return;
+            }
+            Internal::Voice(VoiceEvent::Transmitting { transmitting, .. }) => {
+                self.transmitting = transmitting;
+                self.publish_speaking(on_event);
                 return;
             }
             Internal::Voice(event) => self.voice.on_voice_event(&event),
@@ -283,6 +312,10 @@ impl Session {
             Command::SetSelfDeaf(deaf) => self.voice.set_self_deaf(deaf),
             Command::SetUserAudio { user_id, audio } => {
                 self.driver.set_user_audio(user_id, audio);
+                return;
+            }
+            Command::SetAudioDevices(devices) => {
+                self.driver.set_devices(devices, self.store.me.as_ref().map(|me| me.id));
                 return;
             }
         };

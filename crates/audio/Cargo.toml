@@ -7,5 +7,6 @@ publish.workspace = true
 
 [dependencies]
 cpal = "0.18.2"
+nnnoiseless = { version = "0.5.2", default-features = false }
 rtrb = "0.4.0"
 tracing = "0.1.44"

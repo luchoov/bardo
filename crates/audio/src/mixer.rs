@@ -43,6 +43,15 @@ pub fn rms(samples: &[i16]) -> f32 {
     ((sum / samples.len() as f64).sqrt() / f64::from(i16::MAX)) as f32
 }
 
+/// Root mean square level of float samples in [-1, 1].
+pub fn rms_f32(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f32 = samples.iter().map(|s| s * s).sum();
+    (sum / samples.len() as f32).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

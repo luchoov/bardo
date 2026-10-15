@@ -6,14 +6,14 @@
 
 use std::{collections::HashMap, mem, sync::Arc};
 
-use bardo_audio::Playback;
+use bardo_audio::{Capture, Playback, TransmitControl, Transmitter};
 use bardo_gateway::{Gateway, Id, UpdateVoiceState, VoiceServerUpdate, VoiceState};
 use bardo_voice::{ConnectionInfo, EventCallback, Voice, VoiceEvent};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::{
-    client::Internal,
+    client::{ClientEvent, Internal},
     snapshot::{VoiceStatus, VoiceView},
     store::Store,
 };
@@ -48,9 +48,10 @@ pub(crate) enum Action {
     UpdateState(UpdateVoiceState),
     /// Start the driver connection, or move it.
     Connect(ConnectionInfo),
-    /// Stop the driver and close playback.
+    /// Stop the driver, the microphone and playback.
     Disconnect,
-    SetDeafened(bool),
+    /// Our self mute and deafen changed.
+    SelfState { mute: bool, deaf: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,15 +135,20 @@ impl VoiceSession {
 
     pub fn set_self_mute(&mut self, mute: bool) -> Outcome {
         self.self_mute = mute;
-        self.send_state();
+        self.self_state_changed();
         Outcome::Changed
     }
 
     pub fn set_self_deaf(&mut self, deaf: bool) -> Outcome {
         self.self_deaf = deaf;
-        self.actions.push(Action::SetDeafened(deaf));
-        self.send_state();
+        self.self_state_changed();
         Outcome::Changed
+    }
+
+    fn self_state_changed(&mut self) {
+        // Deafening also mutes, like in the official client.
+        self.actions.push(Action::SelfState { mute: self.self_mute || self.self_deaf, deaf: self.self_deaf });
+        self.send_state();
     }
 
     /// A fresh gateway session drops any voice connection of the previous one.
@@ -213,7 +219,9 @@ impl VoiceSession {
                 self.leave();
                 Outcome::Notice(format!("Lost the voice connection: {reason}"))
             }
-            VoiceEvent::Disconnected { reason: None } | VoiceEvent::Speaking(_) => Outcome::Nothing,
+            VoiceEvent::Disconnected { reason: None }
+            | VoiceEvent::Speaking(_)
+            | VoiceEvent::Transmitting { .. } => Outcome::Nothing,
         }
     }
 
@@ -279,32 +287,50 @@ impl VoiceSession {
     }
 }
 
-/// Owns the voice driver and the output stream, and carries out [`Action`]s.
+/// Audio devices by id; `None` follows the system default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioDevices {
+    pub input: Option<String>,
+    pub output: Option<String>,
+}
+
+/// Owns the voice driver, the microphone and the output stream, and carries out [`Action`]s.
 pub(crate) struct VoiceDriver {
     /// Where driver events and connection results are reported.
     events: mpsc::UnboundedSender<Internal>,
+    transmit: Arc<TransmitControl>,
+    devices: AudioDevices,
     voice: Option<Voice>,
     playback: Option<Playback>,
+    capture: Option<Capture>,
     deafened: bool,
     user_audio: HashMap<Id, UserAudio>,
 }
 
 impl VoiceDriver {
-    pub fn new(events: mpsc::UnboundedSender<Internal>) -> Self {
-        Self { events, voice: None, playback: None, deafened: false, user_audio: HashMap::new() }
+    pub fn new(events: mpsc::UnboundedSender<Internal>, transmit: Arc<TransmitControl>) -> Self {
+        Self {
+            events,
+            transmit,
+            devices: AudioDevices::default(),
+            voice: None,
+            playback: None,
+            capture: None,
+            deafened: false,
+            user_audio: HashMap::new(),
+        }
     }
 
     pub fn perform(&mut self, action: Action, gateway: &Gateway) {
         match action {
             Action::UpdateState(update) => gateway.update_voice_state(&update),
             Action::Connect(info) => {
-                let voice = match &mut self.voice {
-                    Some(voice) => voice,
-                    None => {
-                        let voice = self.create_voice();
-                        self.voice.insert(voice)
-                    }
-                };
+                if self.voice.is_none() {
+                    let voice = self.create_voice();
+                    self.voice = Some(voice);
+                    self.start_capture(info.user_id);
+                }
+                let Some(voice) = &mut self.voice else { return };
                 let connect = voice.connect(info.clone());
                 let events = self.events.clone();
                 tokio::spawn(async move {
@@ -313,18 +339,44 @@ impl VoiceDriver {
                 });
             }
             Action::Disconnect => {
+                self.capture = None;
                 if let Some(voice) = &mut self.voice {
                     voice.leave();
                 }
                 self.voice = None;
                 self.playback = None;
             }
-            Action::SetDeafened(deafened) => {
-                self.deafened = deafened;
+            Action::SelfState { mute, deaf } => {
+                self.transmit.set_muted(mute);
+                self.deafened = deaf;
                 if let Some(voice) = &self.voice {
-                    voice.set_deafened(deafened);
+                    voice.set_deafened(deaf);
                 }
             }
+        }
+    }
+
+    /// Switches devices, reopening them if we are in voice.
+    pub fn set_devices(&mut self, devices: AudioDevices, me: Option<Id>) {
+        if devices == self.devices {
+            return;
+        }
+        let input_changed = devices.input != self.devices.input;
+        let output_changed = devices.output != self.devices.output;
+        self.devices = devices;
+        if self.voice.is_none() {
+            return;
+        }
+        if output_changed {
+            self.playback = None;
+            let sink = self.open_playback();
+            if let Some(voice) = &self.voice {
+                voice.set_playback_sink(sink);
+            }
+        }
+        if input_changed && let Some(me) = me {
+            self.capture = None;
+            self.start_capture(me);
         }
     }
 
@@ -335,17 +387,44 @@ impl VoiceDriver {
         }
     }
 
-    fn create_voice(&mut self) -> Voice {
-        let sink = match Playback::start(None) {
+    fn open_playback(&mut self) -> Option<bardo_audio::PlaybackSink> {
+        match Playback::start(self.devices.output.as_deref()) {
             Ok((playback, sink)) => {
                 self.playback = Some(playback);
                 Some(sink)
             }
             Err(e) => {
                 warn!("could not open the output device: {e}");
+                self.notice(format!("Couldn't open the output device: {e}"));
                 None
             }
-        };
+        }
+    }
+
+    /// Opens the microphone and feeds it, through the transmit gate, to the voice connection.
+    fn start_capture(&mut self, me: Id) {
+        let Some(voice) = &mut self.voice else { return };
+        let mut feed = voice.start_microphone(me);
+        let mut transmitter = Transmitter::new(self.transmit.clone());
+        let started = Capture::start(self.devices.input.as_deref(), move |frame| {
+            let open = transmitter.process(frame);
+            feed.push(frame, open);
+        });
+        match started {
+            Ok(capture) => self.capture = Some(capture),
+            Err(e) => {
+                warn!("could not open the microphone: {e}");
+                self.notice(format!("Couldn't open the microphone: {e}"));
+            }
+        }
+    }
+
+    fn notice(&self, message: String) {
+        let _ = self.events.send(Internal::Event(ClientEvent::Notice(message)));
+    }
+
+    fn create_voice(&mut self) -> Voice {
+        let sink = self.open_playback();
         let events = self.events.clone();
         let on_event: EventCallback = Arc::new(move |event| {
             let _ = events.send(Internal::Voice(event));
@@ -495,8 +574,11 @@ mod tests {
         let mut voice = joined();
         voice.set_self_deaf(true);
         let actions = voice.take_actions();
-        assert_eq!(actions[0], Action::SetDeafened(true));
+        assert_eq!(actions[0], Action::SelfState { mute: true, deaf: true });
         assert!(matches!(&actions[1], Action::UpdateState(update) if update.self_mute && update.self_deaf));
+
+        voice.set_self_deaf(false);
+        assert_eq!(voice.take_actions()[0], Action::SelfState { mute: false, deaf: false });
     }
 
     #[test]

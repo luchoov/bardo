@@ -2,21 +2,24 @@
 //! transport encryption, DAVE end-to-end encryption and Opus.
 
 mod receive;
+mod transmit;
 
 use std::{
     num::{NonZeroU8, NonZeroU64},
     sync::{Arc, Mutex},
 };
 
-use bardo_audio::PlaybackSink;
+use bardo_audio::{PlaybackSink, SAMPLE_RATE};
 use bardo_gateway::Id;
 use songbird::{
     Config, CoreEvent, Driver, Event,
     driver::{Channels, DecodeConfig, DecodeMode, SampleRate},
     id::{ChannelId, GuildId, UserId},
+    input::RawAdapter,
 };
 use tracing::info;
 
+pub use crate::transmit::MicFeed;
 use crate::receive::{Handler, Receiver};
 
 /// Jitter buffer depth, in 20 ms packets. songbird's default (5) adds 100 ms of latency.
@@ -42,6 +45,8 @@ pub enum VoiceEvent {
     Disconnected { reason: Option<String> },
     /// The users currently heard speaking, sorted.
     Speaking(Vec<Id>),
+    /// Our microphone started or stopped being sent.
+    Transmitting { user_id: Id, transmitting: bool },
 }
 
 pub type EventCallback = Arc<dyn Fn(VoiceEvent) + Send + Sync>;
@@ -50,6 +55,7 @@ pub type EventCallback = Arc<dyn Fn(VoiceEvent) + Send + Sync>;
 pub struct Voice {
     driver: Driver,
     receiver: Arc<Mutex<Receiver>>,
+    on_event: EventCallback,
 }
 
 impl Voice {
@@ -61,7 +67,7 @@ impl Voice {
         let mut driver = Driver::new(config);
 
         let receiver = Arc::new(Mutex::new(Receiver::new(sink)));
-        let handler = Handler::new(receiver.clone(), on_event);
+        let handler = Handler::new(receiver.clone(), on_event.clone());
         for event in [
             CoreEvent::VoiceTick,
             CoreEvent::SpeakingStateUpdate,
@@ -72,7 +78,23 @@ impl Voice {
         ] {
             driver.add_global_event(Event::Core(event), handler.clone());
         }
-        Self { driver, receiver }
+        Self { driver, receiver, on_event }
+    }
+
+    /// Starts the microphone track, paused. Feed it from the capture thread through the returned
+    /// [`MicFeed`], which plays and pauses the track as the transmit gate opens and closes.
+    pub fn start_microphone(&mut self, me: Id) -> MicFeed {
+        let (producer, source) = transmit::channel();
+        let track = self.driver.play_only_input(RawAdapter::new(source, SAMPLE_RATE, 1).into());
+        if let Err(e) = track.pause() {
+            tracing::warn!("failed to pause the new microphone track: {e}");
+        }
+        MicFeed::new(producer, track, me, self.on_event.clone())
+    }
+
+    /// Replaces where received audio is played, e.g. after switching output devices.
+    pub fn set_playback_sink(&self, sink: Option<PlaybackSink>) {
+        self.receiver().sink = sink;
     }
 
     /// Connects, or moves the connection to another channel or server. Resolves once the voice

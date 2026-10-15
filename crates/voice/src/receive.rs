@@ -20,7 +20,7 @@ const SPEAKING_LEVEL: f32 = 0.005;
 const SPEAKING_HOLD: Duration = Duration::from_millis(300);
 
 pub(crate) struct Receiver {
-    sink: Option<PlaybackSink>,
+    pub(crate) sink: Option<PlaybackSink>,
     mixer: Mixer,
     /// RTP SSRC → user, learned from speaking updates.
     users: HashMap<u32, Id>,

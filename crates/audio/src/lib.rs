@@ -2,13 +2,18 @@
 //!
 //! Everything runs at Discord's voice format: 48 kHz, 20 ms frames. Playback is always stereo.
 
+mod capture;
 mod devices;
 mod mixer;
 mod playback;
+mod resample;
+mod transmit;
 
-pub use devices::{AudioDevice, output_devices};
-pub use mixer::{Mixer, rms};
+pub use capture::Capture;
+pub use devices::{AudioDevice, input_devices, output_devices};
+pub use mixer::{Mixer, rms, rms_f32};
 pub use playback::{Playback, PlaybackSink};
+pub use transmit::{DEFAULT_THRESHOLD_DB, SILENCE_DB, TransmitControl, Transmitter, level_db};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Samples per channel in one 20 ms frame.

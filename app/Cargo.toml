@@ -14,6 +14,7 @@ slint = "1.18.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 windows-native-keyring-store = "1.1.0"
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 
 [build-dependencies]
 slint-build = "1.18.1"

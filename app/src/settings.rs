@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, fs, io, path::PathBuf};
 
-use bardo_core::Id;
+use bardo_core::{DEFAULT_THRESHOLD_DB, Id};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -11,9 +11,38 @@ pub const MAX_VOLUME: u16 = 200;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub voice: VoiceSettings,
     /// Per-user playback settings, keyed by user id. Users with default settings are left out.
     #[serde(default)]
     pub users: BTreeMap<Id, UserAudio>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceSettings {
+    /// Device ids; `None` follows the system default.
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
+    pub push_to_talk: bool,
+    /// Windows virtual-key code.
+    pub push_to_talk_key: Option<u32>,
+    /// Voice activity threshold in dBFS.
+    pub threshold_db: f32,
+    pub noise_suppression: bool,
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self {
+            input_device: None,
+            output_device: None,
+            push_to_talk: false,
+            push_to_talk_key: None,
+            threshold_db: DEFAULT_THRESHOLD_DB,
+            noise_suppression: true,
+        }
+    }
 }
 
 /// How a user sounds to us. Applies in every server and call, like in the official client.
@@ -91,10 +120,20 @@ mod tests {
         settings.update_user(Id(1), |audio| audio.volume = 100);
         assert!(!settings.users.contains_key(&Id(1)));
 
+        let json = serde_json::to_string(&settings.users).unwrap();
+        assert_eq!(json, r#"{"2":{"volume":100,"muted":true}}"#);
         let json = serde_json::to_string(&settings).unwrap();
-        assert_eq!(json, r#"{"users":{"2":{"volume":100,"muted":true}}}"#);
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.user(Id(2)), UserAudio { volume: 100, muted: true });
+    }
+
+    #[test]
+    fn older_files_get_default_voice_settings() {
+        let settings: Settings = serde_json::from_str(r#"{"users": {}}"#).unwrap();
+        assert_eq!(settings.voice, VoiceSettings::default());
+        let settings: Settings = serde_json::from_str(r#"{"voice": {"push_to_talk": true}}"#).unwrap();
+        assert!(settings.voice.push_to_talk);
+        assert!(settings.voice.noise_suppression);
     }
 
     #[test]
