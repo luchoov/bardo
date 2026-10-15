@@ -6,6 +6,8 @@ use bardo_core::{DEFAULT_THRESHOLD_DB, Id};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::hotkey::Binding;
+
 pub const DEFAULT_VOLUME: u16 = 100;
 pub const MAX_VOLUME: u16 = 200;
 /// Input volume range in percent, like the official client's.
@@ -18,6 +20,31 @@ pub struct Settings {
     /// Per-user playback settings, keyed by user id. Users with default settings are left out.
     #[serde(default)]
     pub users: BTreeMap<Id, UserAudio>,
+    #[serde(default)]
+    pub hotkeys: HotkeySettings,
+    #[serde(default)]
+    pub window: WindowSettings,
+}
+
+/// Global hotkeys besides push-to-talk, which lives in [`VoiceSettings`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HotkeySettings {
+    pub toggle_mute: Option<Binding>,
+    pub toggle_deafen: Option<Binding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowSettings {
+    /// The close button hides bardo in the tray instead of quitting.
+    pub close_to_tray: bool,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self { close_to_tray: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,6 +62,9 @@ pub struct VoiceSettings {
     /// Microphone volume in percent, 0–200.
     pub input_volume: u16,
     pub auto_gain: bool,
+    /// Our mute and deafen, kept across restarts like in the official client.
+    pub self_mute: bool,
+    pub self_deaf: bool,
 }
 
 impl VoiceSettings {
@@ -55,6 +85,8 @@ impl Default for VoiceSettings {
             noise_suppression: true,
             input_volume: DEFAULT_VOLUME,
             auto_gain: true,
+            self_mute: false,
+            self_deaf: false,
         }
     }
 }
@@ -150,6 +182,8 @@ mod tests {
         assert!(settings.voice.noise_suppression);
         assert!(settings.voice.auto_gain);
         assert_eq!(settings.voice.input_gain(), 1.0);
+        assert!(settings.window.close_to_tray);
+        assert_eq!(settings.hotkeys, HotkeySettings::default());
     }
 
     #[test]

@@ -12,6 +12,9 @@ pub struct Snapshot {
     pub guilds: Vec<GuildView>,
     /// Our voice connection, if we are in (or joining) a channel.
     pub voice: Option<VoiceView>,
+    /// Our own mute and deafen, which persist while we are not in voice.
+    pub self_mute: bool,
+    pub self_deaf: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -105,7 +108,7 @@ impl Snapshot {
                 })
             })
             .collect();
-        Self { guilds, voice: None }
+        Self { guilds, ..Self::default() }
     }
 }
 

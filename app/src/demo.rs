@@ -73,5 +73,7 @@ pub fn snapshot() -> Snapshot {
             self_mute: true,
             self_deaf: false,
         }),
+        self_mute: true,
+        self_deaf: false,
     }
 }

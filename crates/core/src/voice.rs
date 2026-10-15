@@ -95,6 +95,11 @@ impl VoiceSession {
         })
     }
 
+    /// Our mute and deafen, as chosen (deafening implies muting when sent to Discord).
+    pub fn self_state(&self) -> (bool, bool) {
+        (self.self_mute, self.self_deaf)
+    }
+
     /// The actions queued since the last call.
     pub fn take_actions(&mut self) -> Vec<Action> {
         mem::take(&mut self.actions)

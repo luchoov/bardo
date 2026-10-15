@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, ListView, Slider } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, Slider } from "std-widgets.slint";
 
 export enum RowKind { guild, channel, participant }
 
@@ -88,9 +88,14 @@ export struct VoiceSettingsView {
     output-index: int,
     push-to-talk: bool,
     key-name: string,
-    capturing-key: bool,
+    mute-key: string,
+    deafen-key: string,
+    // The hotkey being captured: -1 none, 0 push-to-talk, 1 mute, 2 deafen.
+    capturing: int,
     noise-suppression: bool,
     auto-gain: bool,
+    autostart: bool,
+    close-to-tray: bool,
 }
 
 component Icon inherits Text {
@@ -445,6 +450,42 @@ component Label inherits Text {
     font-size: 11px;
 }
 
+// A hotkey with its binding and buttons to change or clear it.
+component KeyRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> key-name;
+    in property <bool> capturing;
+    // Another hotkey is being captured.
+    in property <bool> busy;
+    callback capture();
+    callback clear();
+
+    spacing: 8px;
+    Text {
+        text: root.label;
+        color: Theme.text;
+        vertical-alignment: center;
+        min-width: 90px;
+    }
+    Text {
+        text: root.capturing ? "Press a key… (Esc cancels)" : root.key-name == "" ? "Not set" : root.key-name;
+        color: root.capturing ? Theme.warn : root.key-name == "" ? Theme.muted-text : Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+    Button {
+        text: "Set";
+        enabled: !root.busy;
+        clicked => { root.capture(); }
+    }
+    if root.key-name != "": Button {
+        text: "Clear";
+        enabled: !root.busy;
+        clicked => { root.clear(); }
+    }
+}
+
 // Voice settings: devices, input volume, voice activity or push-to-talk, noise suppression.
 component SettingsSheet inherits Rectangle {
     in property <VoiceSettingsView> view;
@@ -457,11 +498,14 @@ component SettingsSheet inherits Rectangle {
     callback select-input(int);
     callback select-output(int);
     callback set-push-to-talk(bool);
-    callback capture-key();
+    callback capture-key(int);
+    callback clear-key(int);
     callback set-threshold(float);
     callback set-noise-suppression(bool);
     callback set-input-volume(float);
     callback set-auto-gain(bool);
+    callback set-autostart(bool);
+    callback set-close-to-tray(bool);
     callback close();
 
     background: Theme.scrim;
@@ -478,7 +522,10 @@ component SettingsSheet inherits Rectangle {
         clip: true;
         // Keeps clicks on the card from closing the sheet.
         TouchArea { }
+        ScrollView {
+        content-height: layout.preferred-height;
         layout := VerticalLayout {
+            width: parent.width;
             padding: 14px;
             spacing: 6px;
             Text {
@@ -514,21 +561,13 @@ component SettingsSheet inherits Rectangle {
                 current-index: root.view.push-to-talk ? 1 : 0;
                 selected => { root.set-push-to-talk(self.current-index == 1); }
             }
-            if root.view.push-to-talk: HorizontalLayout {
-                spacing: 8px;
-                Text {
-                    text: root.view.capturing-key ? "Press a key or mouse button… (Esc cancels)"
-                        : root.view.key-name == "" ? "No key set" : "Key: " + root.view.key-name;
-                    color: root.view.capturing-key ? Theme.warn : Theme.text;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
-                Button {
-                    text: "Set key";
-                    enabled: !root.view.capturing-key;
-                    clicked => { root.capture-key(); }
-                }
+            if root.view.push-to-talk: KeyRow {
+                label: "Key";
+                key-name: root.view.key-name;
+                capturing: root.view.capturing == 0;
+                busy: root.view.capturing >= 0;
+                capture => { root.capture-key(0); }
+                clear => { root.clear-key(0); }
             }
             if !root.view.push-to-talk: VerticalLayout {
                 spacing: 4px;
@@ -572,6 +611,34 @@ component SettingsSheet inherits Rectangle {
                 checked: root.view.auto-gain;
                 toggled => { root.set-auto-gain(self.checked); }
             }
+            Label { text: "Hotkeys (work while bardo is in the background)"; }
+            KeyRow {
+                label: "Mute";
+                key-name: root.view.mute-key;
+                capturing: root.view.capturing == 1;
+                busy: root.view.capturing >= 0;
+                capture => { root.capture-key(1); }
+                clear => { root.clear-key(1); }
+            }
+            KeyRow {
+                label: "Deafen";
+                key-name: root.view.deafen-key;
+                capturing: root.view.capturing == 2;
+                busy: root.view.capturing >= 0;
+                capture => { root.capture-key(2); }
+                clear => { root.clear-key(2); }
+            }
+            Label { text: "Window"; }
+            CheckBox {
+                text: "Start with Windows (in the tray)";
+                checked: root.view.autostart;
+                toggled => { root.set-autostart(self.checked); }
+            }
+            CheckBox {
+                text: "Closing keeps bardo in the tray";
+                checked: root.view.close-to-tray;
+                toggled => { root.set-close-to-tray(self.checked); }
+            }
             HorizontalLayout {
                 alignment: end;
                 Button {
@@ -580,6 +647,7 @@ component SettingsSheet inherits Rectangle {
                     clicked => { root.close(); }
                 }
             }
+        }
         }
     }
 }
@@ -664,11 +732,14 @@ export component MainWindow inherits Window {
     callback select-input(int);
     callback select-output(int);
     callback set-push-to-talk(bool);
-    callback capture-key();
+    callback capture-key(int);
+    callback clear-key(int);
     callback set-threshold(float);
     callback set-noise-suppression(bool);
     callback set-input-volume(float);
     callback set-auto-gain(bool);
+    callback set-autostart(bool);
+    callback set-close-to-tray(bool);
 
     title: "bardo";
     icon: @image-url("../assets/icon.png");
@@ -787,7 +858,10 @@ export component MainWindow inherits Window {
         select-input(index) => { root.select-input(index); }
         select-output(index) => { root.select-output(index); }
         set-push-to-talk(on) => { root.set-push-to-talk(on); }
-        capture-key => { root.capture-key(); }
+        capture-key(target) => { root.capture-key(target); }
+        clear-key(target) => { root.clear-key(target); }
+        set-autostart(on) => { root.set-autostart(on); }
+        set-close-to-tray(on) => { root.set-close-to-tray(on); }
         set-threshold(value) => { root.set-threshold(value); }
         set-noise-suppression(on) => { root.set-noise-suppression(on); }
         set-input-volume(value) => { root.set-input-volume(value); }
@@ -802,5 +876,51 @@ export component MainWindow inherits Window {
         value <=> root.volume-value;
         changed(volume) => { root.set-volume(root.volume-user, volume); }
         close => { root.close-volume(); }
+    }
+}
+
+// The notification area icon: click to show bardo, right-click for quick actions.
+export component BardoTray inherits SystemTrayIcon {
+    in property <bool> connected;
+    in property <bool> muted;
+    in property <bool> deafened;
+    in property <bool> in-voice;
+    // The hover text.
+    in property <string> status-text: "bardo";
+    callback show-window();
+    callback toggle-mute();
+    callback toggle-deafen();
+    callback leave-voice();
+    callback quit();
+
+    icon: @image-url("../assets/icon.png");
+    tooltip: root.status-text;
+    clicked => { root.show-window(); }
+
+    Menu {
+        MenuItem {
+            title: "Open bardo";
+            activated => { root.show-window(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: root.muted ? "Unmute" : "Mute";
+            enabled: root.connected;
+            activated => { root.toggle-mute(); }
+        }
+        MenuItem {
+            title: root.deafened ? "Undeafen" : "Deafen";
+            enabled: root.connected;
+            activated => { root.toggle-deafen(); }
+        }
+        if root.in-voice: MenuItem {
+            title: "Leave voice";
+            activated => { root.leave-voice(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Quit bardo";
+            activated => { root.quit(); }
+        }
     }
 }

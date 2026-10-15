@@ -243,6 +243,7 @@ impl Session {
     fn publish(&self, on_event: &impl Fn(ClientEvent)) {
         let mut snapshot = Snapshot::build(&self.store);
         snapshot.voice = self.voice.view(&self.store);
+        (snapshot.self_mute, snapshot.self_deaf) = self.voice.self_state();
         on_event(ClientEvent::Snapshot(Arc::new(snapshot)));
     }
 

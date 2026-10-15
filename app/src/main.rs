@@ -5,6 +5,7 @@ mod demo;
 mod hotkey;
 mod settings;
 mod token;
+mod win;
 
 use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Duration};
 
@@ -17,8 +18,8 @@ use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    hotkey::PushToTalk,
-    settings::{Settings, VoiceSettings},
+    hotkey::{Action, Binding, Hotkeys},
+    settings::{HotkeySettings, Settings, VoiceSettings},
 };
 
 slint::include_modules!();
@@ -29,6 +30,25 @@ const SCREEN_MAIN: i32 = 1;
 const NOTICE_DURATION: Duration = Duration::from_secs(8);
 /// How often the input level meter refreshes while the settings are open.
 const METER_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Which hotkey a key capture is for; the index is what the settings UI uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyTarget {
+    PushToTalk = 0,
+    Mute = 1,
+    Deafen = 2,
+}
+
+impl KeyTarget {
+    fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::PushToTalk),
+            1 => Some(Self::Mute),
+            2 => Some(Self::Deafen),
+            _ => None,
+        }
+    }
+}
 
 /// UI-thread state.
 #[derive(Default)]
@@ -45,11 +65,12 @@ struct App {
     /// Bumped whenever a notice is shown, so an older notice's timer does not clear a newer one.
     notice_generation: u64,
     transmit: Arc<TransmitControl>,
-    push_to_talk: Option<PushToTalk>,
+    hotkeys: Option<Hotkeys>,
+    tray: Option<BardoTray>,
     /// Devices listed in the settings sheet, in its order (after "System default").
     inputs: Vec<AudioDevice>,
     outputs: Vec<AudioDevice>,
-    capturing_key: bool,
+    capturing: Option<KeyTarget>,
     meter: slint::Timer,
 }
 
@@ -67,13 +88,57 @@ fn main() -> Result<(), slint::PlatformError> {
         warn!("a TLS crypto provider was already installed");
     }
 
+    let start_in_tray = std::env::args().any(|arg| arg == win::TRAY_ARG);
+    win::use_dark_menus();
     let window = MainWindow::new()?;
+    let claimed = win::claim_single_instance({
+        let weak = window.as_weak();
+        move || {
+            let _ = weak.upgrade_in_event_loop(|window| show_window(&window));
+        }
+    });
+    if !claimed {
+        return Ok(());
+    }
+
     APP.with_borrow_mut(|app| {
         app.settings = Settings::load();
         apply_voice_settings(&app.transmit, &app.settings.voice);
-        app.push_to_talk = Some(PushToTalk::start(app.transmit.clone(), app.settings.voice.push_to_talk_key));
+        let hotkeys = Hotkeys::start(app.transmit.clone(), |action| {
+            let _ = slint::invoke_from_event_loop(move || match action {
+                Action::ToggleMute => toggle_mute(),
+                Action::ToggleDeafen => toggle_deafen(),
+            });
+        });
+        apply_hotkeys(&hotkeys, &app.settings);
+        app.hotkeys = Some(hotkeys);
     });
     window.set_rows(ModelRc::from(APP.with_borrow(|app| app.rows.clone())));
+
+    let tray = BardoTray::new()?;
+    tray.on_show_window({
+        let weak = window.as_weak();
+        move || {
+            if let Some(window) = weak.upgrade() {
+                show_window(&window);
+            }
+        }
+    });
+    tray.on_toggle_mute(toggle_mute);
+    tray.on_toggle_deafen(toggle_deafen);
+    tray.on_leave_voice(|| send(Command::LeaveVoice));
+    tray.on_quit(|| {
+        let _ = slint::quit_event_loop();
+    });
+    APP.with_borrow_mut(|app| app.tray = Some(tray));
+    render_tray();
+
+    window.window().on_close_requested(|| {
+        if !APP.with_borrow(|app| app.settings.window.close_to_tray) {
+            let _ = slint::quit_event_loop();
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
 
     window.on_sign_in({
         let weak = window.as_weak();
@@ -154,20 +219,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     window.on_leave_voice(|| send(Command::LeaveVoice));
-    window.on_toggle_mute(|| {
-        let Some(voice) = APP.with_borrow(|app| app.snapshot.voice.clone()) else { return };
-        // Like the official client: unmuting while deafened also undeafens.
-        if voice.self_deaf {
-            send(Command::SetSelfDeaf(false));
-            send(Command::SetSelfMute(false));
-        } else {
-            send(Command::SetSelfMute(!voice.self_mute));
-        }
-    });
-    window.on_toggle_deafen(|| {
-        let Some(voice) = APP.with_borrow(|app| app.snapshot.voice.clone()) else { return };
-        send(Command::SetSelfDeaf(!voice.self_deaf));
-    });
+    window.on_toggle_mute(toggle_mute);
+    window.on_toggle_deafen(toggle_deafen);
 
     window.on_open_settings({
         let weak = window.as_weak();
@@ -228,18 +281,18 @@ fn main() -> Result<(), slint::PlatformError> {
     window.on_set_auto_gain(|enabled| update_voice_settings(|voice, _| voice.auto_gain = enabled));
     window.on_capture_key({
         let weak = window.as_weak();
-        move || {
-            let Some(window) = weak.upgrade() else { return };
-            APP.with_borrow_mut(|app| app.capturing_key = true);
+        move |target| {
+            let (Some(window), Some(target)) = (weak.upgrade(), KeyTarget::from_index(target)) else { return };
+            APP.with_borrow_mut(|app| app.capturing = Some(target));
             render_settings(&window);
             let weak = window.as_weak();
             APP.with_borrow(|app| {
-                let Some(push_to_talk) = &app.push_to_talk else { return };
-                push_to_talk.capture_next(move |key| {
+                let Some(hotkeys) = &app.hotkeys else { return };
+                hotkeys.capture_next(move |binding| {
                     let _ = slint::invoke_from_event_loop(move || {
-                        APP.with_borrow_mut(|app| app.capturing_key = false);
-                        if key.is_some() {
-                            update_voice_settings(|voice, _| voice.push_to_talk_key = key);
+                        APP.with_borrow_mut(|app| app.capturing = None);
+                        if binding.is_some() {
+                            set_binding(target, binding);
                         }
                         if let Some(window) = weak.upgrade() {
                             render_settings(&window);
@@ -248,6 +301,31 @@ fn main() -> Result<(), slint::PlatformError> {
                 });
             });
         }
+    });
+    window.on_clear_key({
+        let weak = window.as_weak();
+        move |target| {
+            let Some(target) = KeyTarget::from_index(target) else { return };
+            set_binding(target, None);
+            if let Some(window) = weak.upgrade() {
+                render_settings(&window);
+            }
+        }
+    });
+    window.on_set_autostart({
+        let weak = window.as_weak();
+        move |enabled| {
+            win::set_autostart(enabled);
+            if let Some(window) = weak.upgrade() {
+                render_settings(&window);
+            }
+        }
+    });
+    window.on_set_close_to_tray(|enabled| {
+        APP.with_borrow_mut(|app| {
+            app.settings.window.close_to_tray = enabled;
+            app.settings.save();
+        });
     });
 
     window.on_close_volume({
@@ -270,18 +348,54 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         render();
         render_voice_bar(&window);
-        return window.run();
+    } else {
+        start(&window);
     }
+    #[cfg(not(debug_assertions))]
+    start(&window);
 
-    match token::load() {
-        Some(token) => connect(&window, token),
-        None => window.set_screen(SCREEN_LOGIN),
+    if !start_in_tray {
+        window.show()?;
     }
-    let result = window.run();
+    // Keeps running while the window is hidden in the tray, until "Quit" (or closing the window
+    // with close-to-tray off).
+    slint::run_event_loop()?;
+    window.hide()?;
+    APP.with_borrow_mut(|app| app.tray = None);
     if let Some(client) = APP.with_borrow_mut(|app| app.client.take()) {
         client.shutdown();
     }
-    result
+    Ok(())
+}
+
+fn start(window: &MainWindow) {
+    match token::load() {
+        Some(token) => connect(window, token),
+        None => window.set_screen(SCREEN_LOGIN),
+    }
+}
+
+fn show_window(window: &MainWindow) {
+    if let Err(e) = window.show() {
+        warn!("failed to show the window: {e}");
+    }
+    win::bring_to_front(window.window());
+}
+
+fn toggle_mute() {
+    let (mute, deaf) = APP.with_borrow(|app| (app.snapshot.self_mute, app.snapshot.self_deaf));
+    // Like the official client: unmuting while deafened also undeafens.
+    if deaf {
+        send(Command::SetSelfDeaf(false));
+        send(Command::SetSelfMute(false));
+    } else {
+        send(Command::SetSelfMute(!mute));
+    }
+}
+
+fn toggle_deafen() {
+    let deaf = APP.with_borrow(|app| app.snapshot.self_deaf);
+    send(Command::SetSelfDeaf(!deaf));
 }
 
 fn connect(window: &MainWindow, token: String) {
@@ -312,6 +426,12 @@ fn connect(window: &MainWindow, token: String) {
             client.send(Command::SetUserAudio { user_id, audio: user_audio(audio) });
         }
         client.send(Command::SetAudioDevices(audio_devices(&app.settings.voice)));
+        if app.settings.voice.self_mute {
+            client.send(Command::SetSelfMute(true));
+        }
+        if app.settings.voice.self_deaf {
+            client.send(Command::SetSelfDeaf(true));
+        }
         app.client = Some(client);
     });
 }
@@ -326,6 +446,7 @@ fn disconnect(window: &MainWindow, error: &str) {
     });
     render();
     render_voice_bar(window);
+    render_tray();
     window.set_volume_user("".into());
     window.set_login_error(error.into());
     window.set_screen(SCREEN_LOGIN);
@@ -347,16 +468,23 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
             };
             window.set_connected(state == ConnectionState::Connected);
             window.set_status(status.into());
+            render_tray();
         }
         ClientEvent::Snapshot(snapshot) => {
             APP.with_borrow_mut(|app| {
                 if snapshot.voice.is_none() {
                     app.speaking.clear();
                 }
+                let voice = &mut app.settings.voice;
+                if (voice.self_mute, voice.self_deaf) != (snapshot.self_mute, snapshot.self_deaf) {
+                    (voice.self_mute, voice.self_deaf) = (snapshot.self_mute, snapshot.self_deaf);
+                    app.settings.save();
+                }
                 app.snapshot = snapshot;
             });
             render();
             render_voice_bar(window);
+            render_tray();
         }
         ClientEvent::Speaking(users) => {
             APP.with_borrow_mut(|app| app.speaking = users.into_iter().collect());
@@ -420,12 +548,37 @@ fn update_voice_settings(update: impl FnOnce(&mut VoiceSettings, &App)) {
             return;
         }
         apply_voice_settings(&app.transmit, &voice);
-        if let Some(push_to_talk) = &app.push_to_talk {
-            push_to_talk.set_key(voice.push_to_talk_key);
+        if let Some(hotkeys) = &app.hotkeys {
+            hotkeys.set_push_to_talk(voice.push_to_talk_key);
         }
         app.settings.voice = voice;
         app.settings.save();
     });
+}
+
+fn update_hotkeys(update: impl FnOnce(&mut HotkeySettings)) {
+    APP.with_borrow_mut(|app| {
+        update(&mut app.settings.hotkeys);
+        if let Some(hotkeys) = &app.hotkeys {
+            apply_hotkeys(hotkeys, &app.settings);
+        }
+        app.settings.save();
+    });
+}
+
+fn apply_hotkeys(hotkeys: &Hotkeys, settings: &Settings) {
+    hotkeys.set_push_to_talk(settings.voice.push_to_talk_key);
+    hotkeys.set_binding(Action::ToggleMute, settings.hotkeys.toggle_mute);
+    hotkeys.set_binding(Action::ToggleDeafen, settings.hotkeys.toggle_deafen);
+}
+
+fn set_binding(target: KeyTarget, binding: Option<Binding>) {
+    match target {
+        // Push-to-talk is a single key; modifiers would only get in the way mid-game.
+        KeyTarget::PushToTalk => update_voice_settings(|voice, _| voice.push_to_talk_key = binding.map(|b| b.key)),
+        KeyTarget::Mute => update_hotkeys(|hotkeys| hotkeys.toggle_mute = binding),
+        KeyTarget::Deafen => update_hotkeys(|hotkeys| hotkeys.toggle_deafen = binding),
+    }
 }
 
 fn apply_voice_settings(transmit: &TransmitControl, voice: &VoiceSettings) {
@@ -472,7 +625,11 @@ fn render_settings(window: &MainWindow) {
             output_index: index(&app.outputs, &voice.output_device),
             push_to_talk: voice.push_to_talk,
             key_name: voice.push_to_talk_key.map(hotkey::key_name).unwrap_or_default().into(),
-            capturing_key: app.capturing_key,
+            mute_key: app.settings.hotkeys.toggle_mute.map(Binding::name).unwrap_or_default().into(),
+            deafen_key: app.settings.hotkeys.toggle_deafen.map(Binding::name).unwrap_or_default().into(),
+            capturing: app.capturing.map_or(-1, |target| target as i32),
+            autostart: win::autostart_enabled(),
+            close_to_tray: app.settings.window.close_to_tray,
             noise_suppression: voice.noise_suppression,
             auto_gain: voice.auto_gain,
         }
@@ -596,6 +753,28 @@ fn render_voice_bar(window: &MainWindow) {
         None => VoiceBar::default(),
     });
     window.set_voice(bar);
+}
+
+fn render_tray() {
+    APP.with_borrow(|app| {
+        let Some(tray) = &app.tray else { return };
+        let snapshot = &app.snapshot;
+        tray.set_connected(app.client.is_some());
+        tray.set_muted(snapshot.self_mute || snapshot.self_deaf);
+        tray.set_deafened(snapshot.self_deaf);
+        tray.set_in_voice(snapshot.voice.is_some());
+        let mut tooltip = String::from("bardo");
+        if let Some(voice) = &snapshot.voice {
+            tooltip.push_str(" — ");
+            tooltip.push_str(&voice.channel_name);
+        }
+        if snapshot.self_deaf {
+            tooltip.push_str(" (deafened)");
+        } else if snapshot.self_mute {
+            tooltip.push_str(" (muted)");
+        }
+        tray.set_status_text(tooltip.into());
+    });
 }
 
 fn initial(name: &str) -> String {
