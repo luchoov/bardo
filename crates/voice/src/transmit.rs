@@ -26,20 +26,28 @@ pub struct MicFeed {
     producer: Producer<f32>,
     track: TrackHandle,
     sending: bool,
+    /// The track failed or ended; nothing more can be sent through it.
+    dead: bool,
+    /// Whether a full queue was already reported during this burst of speech.
+    reported_full: bool,
     me: Id,
     on_event: EventCallback,
 }
 
 impl MicFeed {
     pub(crate) fn new(producer: Producer<f32>, track: TrackHandle, me: Id, on_event: EventCallback) -> Self {
-        Self { producer, track, sending: false, me, on_event }
+        Self { producer, track, sending: false, dead: false, reported_full: false, me, on_event }
     }
 
     /// Queues a 20 ms mono frame if `open`, and starts or stops the track as the gate changes.
     pub fn push(&mut self, frame: &[f32], open: bool) {
+        if self.dead {
+            return;
+        }
         if open {
-            if self.producer.push_entire_slice(frame).is_err() {
-                warn!("microphone queue full, dropping a frame");
+            if self.producer.push_entire_slice(frame).is_err() && !self.reported_full {
+                self.reported_full = true;
+                warn!("microphone queue full: the voice connection is not reading it");
             }
             // Start after queueing, so the first read finds audio.
             if !self.sending {
@@ -52,11 +60,14 @@ impl MicFeed {
 
     fn set_sending(&mut self, sending: bool) {
         self.sending = sending;
+        self.reported_full = false;
         let result = if sending { self.track.play() } else { self.track.pause() };
         if let Err(e) = result {
-            warn!("failed to switch the microphone track: {e}");
+            warn!("the microphone track stopped working: {e}");
+            self.dead = true;
+            self.sending = false;
         }
-        (self.on_event)(VoiceEvent::Transmitting { user_id: self.me, transmitting: sending });
+        (self.on_event)(VoiceEvent::Transmitting { user_id: self.me, transmitting: self.sending });
     }
 }
 
@@ -146,6 +157,14 @@ mod tests {
 
     fn samples(bytes: &[u8]) -> Vec<f32> {
         bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_le_bytes(b)).collect()
+    }
+
+    /// songbird disables symphonia's codecs by default; without the PCM decoder the microphone
+    /// track fails with "no compatible track found".
+    #[test]
+    fn the_raw_track_codec_is_available() {
+        use songbird::input::{codecs::get_codec_registry, core::codecs::CODEC_TYPE_PCM_F32LE};
+        assert!(get_codec_registry().get_codec(CODEC_TYPE_PCM_F32LE).is_some());
     }
 
     #[test]

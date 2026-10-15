@@ -2,6 +2,10 @@
 resolver = "3"
 members = ["app", "crates/*"]
 
+# Audio DSP (Opus, RNNoise, resampling) is far too slow unoptimized; keep dependencies fast in debug builds.
+[profile.dev.package."*"]
+opt-level = 2
+
 [workspace.package]
 edition = "2024"
 license = "MIT"
