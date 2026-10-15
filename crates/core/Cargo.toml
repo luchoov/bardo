@@ -1,0 +1,15 @@
+[package]
+name = "bardo-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bardo-api = { version = "0.1.0", path = "../api" }
+bardo-gateway = { version = "0.1.0", path = "../gateway" }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+serde_json = "1.0.154"

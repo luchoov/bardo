@@ -1,0 +1,17 @@
+[package]
+name = "bardo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bardo-core = { version = "0.1.0", path = "../crates/core" }
+keyring-core = "1.0.1"
+slint = "1.18.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+windows-native-keyring-store = "1.1.0"
+
+[build-dependencies]
+slint-build = "1.18.1"
