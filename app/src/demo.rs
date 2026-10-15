@@ -1,10 +1,12 @@
 //! Debug builds only: `BARDO_DEMO=1` shows made-up servers instead of connecting, to work on the UI
-//! without an account. `BARDO_DEMO=login` shows the sign-in screen instead. Nothing is saved.
+//! without an account. `BARDO_DEMO=login` shows the sign-in screen instead, and `BARDO_DEMO=call` an
+//! incoming call. Nothing is saved.
 
 use std::collections::HashSet;
 
 use bardo_core::{
-    ChannelView, FriendInVoice, GuildView, Id, Moderation, Participant, Snapshot, VoiceStatus, VoiceView,
+    CallView, ChannelView, FriendInVoice, GuildView, Id, Moderation, Participant, PrivateChannelView, Snapshot,
+    VoiceStatus, VoiceView,
 };
 
 pub fn enabled() -> bool {
@@ -125,10 +127,34 @@ pub fn snapshot() -> Snapshot {
         }
     }
 
+    let calls = vec![
+        CallView {
+            channel_id: Id(60),
+            name: "Dante".to_owned(),
+            group: false,
+            participants: vec![Participant { moderation: Moderation::default(), ..friend(104, "Dante") }],
+            ringing_me: std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "call"),
+        },
+        CallView {
+            channel_id: Id(61),
+            name: "Los pibes".to_owned(),
+            group: true,
+            participants: vec![stranger(120, "Nico"), stranger(121, "Rama")],
+            ringing_me: false,
+        },
+    ];
+    let private_channels = vec![
+        PrivateChannelView { id: Id(60), name: "Dante".to_owned(), group: false, recipients: vec![Id(104)] },
+        PrivateChannelView { id: Id(61), name: "Los pibes".to_owned(), group: true, recipients: vec![Id(120), Id(121)] },
+        PrivateChannelView { id: Id(62), name: "Fanta".to_owned(), group: false, recipients: vec![Id(101)] },
+    ];
+
     Snapshot {
         guilds,
+        calls,
+        private_channels,
         voice: Some(VoiceView {
-            guild_id: Id(1),
+            guild_id: Some(Id(1)),
             channel_id: Id(10),
             guild_name: "La Dictadura".to_owned(),
             channel_name: "Contador Público".to_owned(),

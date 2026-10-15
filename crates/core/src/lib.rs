@@ -11,7 +11,11 @@ pub use bardo_api::MemberChange;
 pub use bardo_gateway::{ConnectionState, Id};
 pub use client::{Client, ClientEvent, Command};
 pub use snapshot::{
-    ChannelView, FriendInVoice, GuildView, Moderation, Participant, Snapshot, VoiceStatus, VoiceView,
+    CallView, ChannelView, FriendInVoice, GuildView, Moderation, Participant, PrivateChannelView, Snapshot,
+    VoiceStatus, VoiceView,
 };
-pub use bardo_audio::{AudioDevice, DEFAULT_THRESHOLD_DB, SILENCE_DB, TransmitControl, input_devices, output_devices};
+pub use bardo_audio::{
+    AudioDevice, DEFAULT_THRESHOLD_DB, Ringer, SILENCE_DB, Sound, TransmitControl, input_devices, output_devices,
+    play_sound,
+};
 pub use voice::{AudioDevices, UserAudio};

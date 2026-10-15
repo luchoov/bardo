@@ -56,8 +56,16 @@ pub(crate) enum Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Target {
-    guild_id: Id,
+    /// `None` for DM and group calls.
+    guild_id: Option<Id>,
     channel_id: Id,
+}
+
+impl Target {
+    /// What the voice server calls the server: the guild, or the DM channel for calls.
+    fn server(self) -> Id {
+        self.guild_id.unwrap_or(self.channel_id)
+    }
 }
 
 #[derive(Default)]
@@ -79,15 +87,25 @@ pub(crate) struct VoiceSession {
 impl VoiceSession {
     pub fn view(&self, store: &Store) -> Option<VoiceView> {
         let target = self.target?;
-        let guild = store.guilds.get(&target.guild_id);
-        let channel_name = guild
-            .and_then(|guild| guild.channels.get(&target.channel_id))
-            .and_then(|channel| channel.name.clone())
-            .unwrap_or_default();
+        let (guild_name, channel_name) = match target.guild_id {
+            Some(guild_id) => {
+                let guild = store.guilds.get(&guild_id);
+                let channel_name = guild
+                    .and_then(|guild| guild.channels.get(&target.channel_id))
+                    .and_then(|channel| channel.name.clone())
+                    .unwrap_or_default();
+                (guild.map(|guild| guild.name.clone()).unwrap_or_default(), channel_name)
+            }
+            None => {
+                let channel = store.private_channels.get(&target.channel_id);
+                let kind = if channel.is_some_and(Store::is_group) { "Group call" } else { "Call" };
+                (kind.to_owned(), channel.map(|channel| store.private_channel_name(channel)).unwrap_or_default())
+            }
+        };
         Some(VoiceView {
             guild_id: target.guild_id,
             channel_id: target.channel_id,
-            guild_name: guild.map(|guild| guild.name.clone()).unwrap_or_default(),
+            guild_name,
             channel_name,
             status: self.status,
             self_mute: self.self_mute,
@@ -105,18 +123,25 @@ impl VoiceSession {
         mem::take(&mut self.actions)
     }
 
-    pub fn join(&mut self, guild_id: Id, channel_id: Id) -> Outcome {
+    /// The channel we are connected to, once the voice handshake is done.
+    pub fn connected_channel(&self) -> Option<Id> {
+        self.target.filter(|_| self.status == VoiceStatus::Connected).map(|target| target.channel_id)
+    }
+
+    /// Joins a guild voice channel, or a DM or group call with `guild_id: None`.
+    pub fn join(&mut self, guild_id: Option<Id>, channel_id: Id) -> Outcome {
+        let new = Target { guild_id, channel_id };
         if let Some(target) = self.target
-            && target.guild_id != guild_id
+            && target.server() != new.server()
         {
-            // A voice server serves one guild: start over.
+            // A voice server serves one guild (or call): start over.
             self.actions.push(Action::Disconnect);
             self.connected = None;
             self.voice_session_id = None;
             self.server = None;
         }
-        info!(%guild_id, %channel_id, "joining voice");
-        self.target = Some(Target { guild_id, channel_id });
+        info!(?guild_id, %channel_id, "joining voice");
+        self.target = Some(new);
         if self.status == VoiceStatus::Disconnected {
             self.status = VoiceStatus::Connecting;
         }
@@ -126,9 +151,9 @@ impl VoiceSession {
 
     pub fn leave(&mut self) -> Outcome {
         let Some(target) = self.target else { return Outcome::Nothing };
-        info!(guild_id = %target.guild_id, "leaving voice");
+        info!(guild_id = ?target.guild_id, "leaving voice");
         self.actions.push(Action::UpdateState(UpdateVoiceState {
-            guild_id: Some(target.guild_id),
+            guild_id: target.guild_id,
             channel_id: None,
             self_mute: self.self_mute,
             self_deaf: self.self_deaf,
@@ -178,6 +203,10 @@ impl VoiceSession {
             }
             return Outcome::Nothing;
         }
+        if state.channel_id.is_none() && self.target.is_some_and(|target| target.guild_id != state.guild_id) {
+            // We left the server we were in before; we are already on our way somewhere else.
+            return Outcome::Nothing;
+        }
 
         let Some(channel_id) = state.channel_id else {
             self.reset();
@@ -196,7 +225,11 @@ impl VoiceSession {
 
     pub fn on_voice_server(&mut self, update: &VoiceServerUpdate, me: Id) -> Outcome {
         let Some(target) = self.target else { return Outcome::Nothing };
-        if update.guild_id != Some(target.guild_id) {
+        let ours = match target.guild_id {
+            Some(guild_id) => update.guild_id == Some(guild_id),
+            None => update.guild_id.is_none() && update.channel_id.is_none_or(|id| id == target.channel_id),
+        };
+        if !ours {
             return Outcome::Nothing;
         }
         match &update.endpoint {
@@ -255,7 +288,7 @@ impl VoiceSession {
             return;
         };
         let info = ConnectionInfo {
-            server_id: target.guild_id,
+            server_id: target.server(),
             channel_id: target.channel_id,
             user_id: me,
             session_id,
@@ -273,7 +306,7 @@ impl VoiceSession {
     fn send_state(&mut self) {
         let Some(target) = self.target else { return };
         self.actions.push(Action::UpdateState(UpdateVoiceState {
-            guild_id: Some(target.guild_id),
+            guild_id: target.guild_id,
             channel_id: Some(target.channel_id),
             self_mute: self.self_mute || self.self_deaf,
             self_deaf: self.self_deaf,
@@ -473,7 +506,7 @@ mod tests {
 
     fn joined() -> VoiceSession {
         let mut voice = VoiceSession::default();
-        voice.join(GUILD, CHANNEL);
+        voice.join(Some(GUILD), CHANNEL);
         voice.take_actions();
         voice
     }
@@ -492,7 +525,7 @@ mod tests {
     #[test]
     fn join_sends_op_4_and_connects_once_both_updates_arrive() {
         let mut voice = VoiceSession::default();
-        assert_eq!(voice.join(GUILD, CHANNEL), Outcome::Changed);
+        assert_eq!(voice.join(Some(GUILD), CHANNEL), Outcome::Changed);
         assert_eq!(
             voice.take_actions(),
             [Action::UpdateState(UpdateVoiceState {
@@ -572,6 +605,37 @@ mod tests {
         let actions = voice.take_actions();
         assert!(matches!(&actions[0], Action::UpdateState(update) if update.channel_id.is_none()));
         assert_eq!(actions[1], Action::Disconnect);
+    }
+
+    #[test]
+    fn dm_calls_use_the_channel_as_the_server() {
+        const DM: Id = Id(50);
+        let mut voice = joined();
+        voice.join(None, DM);
+        let actions = voice.take_actions();
+        assert_eq!(actions[0], Action::Disconnect);
+        assert!(matches!(&actions[1], Action::UpdateState(update) if update.guild_id.is_none() && update.channel_id == Some(DM)));
+
+        // Leaving the guild we were in does not end the call we are joining.
+        assert_eq!(voice.on_voice_state(&state(None, SESSION), ME, SESSION), Outcome::Nothing);
+
+        let server = serde_json::from_value(serde_json::json!({
+            "guild_id": null, "channel_id": DM, "token": "voice-token", "endpoint": "voice.discord.media:443",
+        }))
+        .unwrap();
+        voice.on_voice_server(&server, ME);
+        let call_state = serde_json::from_value(serde_json::json!({
+            "guild_id": null, "channel_id": DM, "user_id": ME, "session_id": SESSION,
+        }))
+        .unwrap();
+        voice.on_voice_state(&call_state, ME, SESSION);
+        let info = ConnectionInfo { server_id: DM, ..connect_info(DM) };
+        assert_eq!(voice.take_actions(), [Action::Connect(info.clone())]);
+        voice.on_connect_result(&info, Ok(()));
+        assert_eq!(voice.connected_channel(), Some(DM));
+
+        voice.leave();
+        assert!(matches!(&voice.take_actions()[0], Action::UpdateState(update) if update.guild_id.is_none() && update.channel_id.is_none()));
     }
 
     #[test]

@@ -12,11 +12,13 @@ out of the way of your game's frame time and memory.
 - Push-to-talk, or voice activity with noise suppression and automatic gain control.
 - Global hotkeys for mute and deafen that do not take the keys away from the game.
 - Per-user volume (0–200 %) and local mute; server mute, deafen, move and disconnect for admins.
-- Lives in the tray and can start with Windows.
+- DM and group calls: call from search (Ctrl+K) or a friend's menu, answer or decline incoming ones.
+- Lives in the tray and can start with Windows. Short sounds confirm mute and deafen mid-game.
 - Runs alongside the official client: keep Discord closed while you play, or use it for text.
 
 > **Status:** early development. Server voice works end to end (with DAVE): joining, listening,
-> talking, moderation. DM and group calls are next.
+> talking, moderation. DM and group calls (call, answer, decline, ring) are implemented but not yet
+> verified against Discord.
 
 > **Disclaimer:** bardo is not affiliated with or endorsed by Discord. Using a user account from an
 > unofficial client is against Discord's Terms of Service and may get the account banned. Use at your own risk.
@@ -74,7 +76,8 @@ Threads: a tokio runtime for networking, dedicated real-time threads for audio, 
 2. Moderation: context menu (mute/deafen/move/disconnect). *(done)*
 3. Voice — receive: join and listen (validates DAVE). *(done)*
 4. Voice — send: microphone, PTT, VAD, input gain. *(done)*
-5. DM / group calls.
+5. DM / group calls. *(implemented: ongoing calls listed, incoming call card with a ringtone,
+   calling rings the others; needs a live test)*
 6. Polish: tray, global hotkeys, own UI components, friends in voice, pinned servers, search. *(done)*
 7. Release build and installer; memory and CPU numbers against the official client.
 
@@ -104,7 +107,7 @@ The token grants full access to the account: never share it or commit it.
 | `BARDO_TOKEN` | Use this token instead of the stored one. |
 | `BARDO_DUMP_DIR` | Write raw `READY`, `READY_SUPPLEMENTAL` and unparseable dispatches to this directory. They contain account data: keep the directory outside the repo. |
 | `RUST_LOG` | Log filter, e.g. `info,bardo_gateway=debug`. Debug builds log to the console. `songbird=debug` shows the voice handshake. |
-| `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account (`login` shows the sign-in screen). Nothing is saved. |
+| `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account (`login` shows the sign-in screen, `call` an incoming call). Nothing is saved. |
 
 Settings (voice, hotkeys, pinned servers, per-user volume and local mutes) are stored in
 `%APPDATA%\bardo\settings.json`.

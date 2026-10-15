@@ -107,6 +107,9 @@ pub struct Channel {
     pub recipient_ids: Vec<Id>,
     #[serde(default)]
     pub recipients: Vec<User>,
+    /// Orders DMs by recent activity.
+    #[serde(default)]
+    pub last_message_id: Option<Id>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -257,6 +260,23 @@ pub struct VoiceServerUpdate {
     pub channel_id: Option<Id>,
     #[serde(default)]
     pub endpoint: Option<String>,
+}
+
+/// A call in a DM or group DM (CALL_CREATE, CALL_UPDATE). Sent for ongoing calls after READY too.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Call {
+    pub channel_id: Id,
+    /// Users being rung.
+    #[serde(default)]
+    pub ringing: Vec<Id>,
+    /// Only in CALL_CREATE.
+    #[serde(default)]
+    pub voice_states: Vec<VoiceState>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallDelete {
+    pub channel_id: Id,
 }
 
 #[derive(Debug, Clone, Deserialize)]

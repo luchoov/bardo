@@ -7,12 +7,14 @@ mod devices;
 mod mixer;
 mod playback;
 mod resample;
+mod sounds;
 mod transmit;
 
 pub use capture::Capture;
 pub use devices::{AudioDevice, input_devices, output_devices};
 pub use mixer::{Mixer, rms, rms_f32};
 pub use playback::{Playback, PlaybackSink};
+pub use sounds::{Ringer, Sound, play as play_sound};
 pub use transmit::{DEFAULT_THRESHOLD_DB, SILENCE_DB, TransmitControl, Transmitter, level_db};
 
 pub const SAMPLE_RATE: u32 = 48_000;

@@ -12,7 +12,10 @@ use windows_sys::Win32::{
         Registry::{HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW},
         Threading::{CreateEventW, INFINITE, SetEvent, WaitForSingleObject},
     },
-    UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow},
+    UI::WindowsAndMessaging::{
+        ASFW_ANY, AllowSetForegroundWindow, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, IsIconic,
+        SW_RESTORE, SetForegroundWindow, ShowWindow,
+    },
 };
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -133,12 +136,31 @@ struct SendHandle(HANDLE);
 // SAFETY: event handles may be used from any thread.
 unsafe impl Send for SendHandle {}
 
+fn hwnd(window: &slint::Window) -> Option<HWND> {
+    let handle = window.window_handle();
+    let handle = handle.window_handle().ok()?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return None };
+    Some(handle.hwnd.get() as HWND)
+}
+
+/// Flashes the taskbar button until the window comes to the front, without taking the focus
+/// (a game keeps it).
+pub fn flash(window: &slint::Window) {
+    let Some(hwnd) = hwnd(window) else { return };
+    let info = FLASHWINFO {
+        cbSize: size_of::<FLASHWINFO>() as u32,
+        hwnd,
+        dwFlags: FLASHW_ALL | FLASHW_TIMERNOFG,
+        uCount: 0,
+        dwTimeout: 0,
+    };
+    // SAFETY: a valid window and a fully initialized structure.
+    unsafe { FlashWindowEx(&info) };
+}
+
 /// Restores the window if minimized and brings it to the front.
 pub fn bring_to_front(window: &slint::Window) {
-    let handle = window.window_handle();
-    let Ok(handle) = handle.window_handle() else { return };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
-    let hwnd = handle.hwnd.get() as HWND;
+    let Some(hwnd) = hwnd(window) else { return };
     // SAFETY: a valid top-level window of this process.
     unsafe {
         if IsIconic(hwnd) != 0 {

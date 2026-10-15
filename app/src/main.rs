@@ -11,8 +11,8 @@ mod win;
 use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Duration};
 
 use bardo_core::{
-    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, SILENCE_DB,
-    Snapshot, TransmitControl, UserAudio, VoiceStatus,
+    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, Ringer, SILENCE_DB,
+    Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::warn;
@@ -78,6 +78,10 @@ struct App {
     outputs: Vec<AudioDevice>,
     capturing: Option<KeyTarget>,
     meter: slint::Timer,
+    /// Rings while a call is calling us.
+    ringer: Option<Ringer>,
+    /// The call that is ringing us, so a new one flashes the taskbar again.
+    ringing: Option<Id>,
 }
 
 thread_local! {
@@ -160,6 +164,7 @@ fn main() -> Result<(), slint::PlatformError> {
             app.settings.ephemeral = true;
             app.settings.servers.pinned = demo::pinned();
         });
+        update_ringing(&window);
         render_all();
     } else {
         start(&window);
@@ -235,9 +240,19 @@ fn wire_main(window: &MainWindow) {
     });
     window.on_search_accepted(|| {
         let first = APP.with_borrow(|app| view::first_result(&app.rows.iter().collect::<Vec<_>>()));
-        if let Some((guild, channel)) = first {
-            join(&guild, &channel);
+        match first {
+            Some((guild, channel)) if guild.is_empty() => start_call(&channel),
+            Some((guild, channel)) => join(&guild, &channel),
+            None => {}
         }
+    });
+    window.on_accept_call(|channel| join("", &channel));
+    window.on_decline_call(|channel| {
+        if let Some(channel_id) = parse_id(&channel) {
+            send(Command::DeclineCall { channel_id });
+        }
+        // Stop ringing at once; Discord confirms with CALL_UPDATE.
+        APP.with_borrow_mut(|app| app.ringer = None);
     });
 }
 
@@ -256,7 +271,7 @@ fn wire_list(window: &MainWindow) {
         let Some(guild_id) = parse_id(&guild) else { return };
         APP.with_borrow_mut(|app| {
             let in_main = app.settings.servers.is_pinned(guild_id)
-                || app.snapshot.voice.as_ref().is_some_and(|voice| voice.guild_id == guild_id);
+                || app.snapshot.voice.as_ref().is_some_and(|voice| voice.guild_id == Some(guild_id));
             let set = if in_main { &mut app.list.collapsed } else { &mut app.list.expanded };
             if !set.remove(&guild_id) {
                 set.insert(guild_id);
@@ -280,6 +295,7 @@ fn wire_list(window: &MainWindow) {
         render();
     });
     api.on_join_channel(|guild, channel| join(&guild, &channel));
+    api.on_start_call(|channel| start_call(&channel));
     api.on_leave_voice(|| send(Command::LeaveVoice));
     api.on_set_server_mute(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerMute(on)));
     api.on_set_server_deafen(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerDeafen(on)));
@@ -389,6 +405,10 @@ fn wire_settings(window: &MainWindow) {
         win::set_autostart(enabled);
         render_settings_now();
     });
+    ui.on_set_sounds(|enabled| {
+        update_voice_settings(|voice, _| voice.sounds = enabled);
+        render_settings_now();
+    });
     ui.on_set_close_to_tray(|enabled| {
         update_settings(|settings| settings.window.close_to_tray = enabled);
         render_settings_now();
@@ -454,6 +474,8 @@ fn disconnect(window: &MainWindow, error: &str) {
     APP.with_borrow_mut(|app| {
         app.client = None;
         app.connection = None;
+        app.ringer = None;
+        app.ringing = None;
         app.generation += 1;
         app.snapshot = Arc::default();
         app.speaking.clear();
@@ -488,6 +510,7 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
                 }
                 app.snapshot = snapshot;
             });
+            update_ringing(window);
             render_all();
         }
         ClientEvent::Speaking(users) => {
@@ -526,26 +549,87 @@ fn send(command: Command) {
     });
 }
 
+/// Joins a guild voice channel, or a DM or group call when `guild` is empty.
 fn join(guild: &str, channel: &str) {
-    if let (Some(guild_id), Some(channel_id)) = (parse_id(guild), parse_id(channel)) {
-        send(Command::JoinVoice { guild_id, channel_id });
+    let Some(channel_id) = parse_id(channel) else { return };
+    let guild_id = if guild.is_empty() { None } else { parse_id(guild) };
+    if guild_id.is_none() && !guild.is_empty() {
+        return;
+    }
+    APP.with_borrow_mut(|app| app.ringer = None);
+    send(Command::JoinVoice { guild_id, channel_id });
+}
+
+fn start_call(channel: &str) {
+    if let Some(channel_id) = parse_id(channel) {
+        send(Command::StartCall { channel_id });
+    }
+}
+
+/// Starts or stops the ringtone, and shows who is calling.
+fn update_ringing(window: &MainWindow) {
+    let (calling, deaf, sounds, device) = APP.with_borrow(|app| {
+        let in_voice = app.snapshot.voice.as_ref().map(|voice| voice.channel_id);
+        let calling = app.snapshot.calls.iter().find(|call| call.ringing_me && in_voice != Some(call.channel_id));
+        (calling.cloned(), app.snapshot.self_deaf, app.settings.voice.sounds, app.settings.voice.output_device.clone())
+    });
+    window.set_incoming(match &calling {
+        Some(call) => IncomingCall {
+            active: true,
+            channel_id: call.channel_id.to_string().into(),
+            name: call.name.as_str().into(),
+            initial: view::initial(&call.name).into(),
+            group: call.group,
+        },
+        None => IncomingCall::default(),
+    });
+    let channel = calling.as_ref().map(|call| call.channel_id);
+    let is_new = APP.with_borrow_mut(|app| {
+        let is_new = channel.is_some() && app.ringing != channel;
+        app.ringing = channel;
+        if channel.is_none() {
+            app.ringer = None;
+        } else if is_new && sounds && !deaf {
+            app.ringer = Some(Ringer::start(device));
+        }
+        is_new
+    });
+    if is_new {
+        win::flash(window.window());
+    }
+}
+
+fn play(sound: Sound) {
+    let (enabled, device) = APP.with_borrow(|app| (app.settings.voice.sounds, app.settings.voice.output_device.clone()));
+    if enabled {
+        bardo_core::play_sound(sound, device);
     }
 }
 
 fn toggle_mute() {
-    let (mute, deaf) = APP.with_borrow(|app| (app.snapshot.self_mute, app.snapshot.self_deaf));
+    let (connected, mute, deaf) =
+        APP.with_borrow(|app| (app.client.is_some(), app.snapshot.self_mute, app.snapshot.self_deaf));
+    if !connected {
+        return;
+    }
     // Like the official client: unmuting while deafened also undeafens.
     if deaf {
         send(Command::SetSelfDeaf(false));
         send(Command::SetSelfMute(false));
+        play(Sound::Unmute);
     } else {
         send(Command::SetSelfMute(!mute));
+        play(if mute { Sound::Unmute } else { Sound::Mute });
     }
 }
 
 fn toggle_deafen() {
-    let deaf = APP.with_borrow(|app| app.snapshot.self_deaf);
+    let (connected, deaf) = APP.with_borrow(|app| (app.client.is_some(), app.snapshot.self_deaf));
+    if !connected {
+        return;
+    }
     send(Command::SetSelfDeaf(!deaf));
+    play(if deaf { Sound::Undeafen } else { Sound::Deafen });
 }
 
 fn modify_member(guild: &str, user: &str, change: MemberChange) {
@@ -685,6 +769,7 @@ fn render_settings(window: &MainWindow) {
             capturing: app.capturing.map_or(-1, |target| target as i32),
             noise_suppression: voice.noise_suppression,
             auto_gain: voice.auto_gain,
+            sounds: voice.sounds,
             autostart: win::autostart_enabled(),
             close_to_tray: app.settings.window.close_to_tray,
             account: app.snapshot.me.as_ref().map(|(_, name)| name.as_str()).unwrap_or_default().into(),

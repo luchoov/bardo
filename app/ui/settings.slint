@@ -19,6 +19,7 @@ export struct SettingsView {
     capturing: int,
     noise-suppression: bool,
     auto-gain: bool,
+    sounds: bool,
     autostart: bool,
     close-to-tray: bool,
     account: string,
@@ -45,6 +46,7 @@ export global SettingsUi {
     callback set-noise-suppression(bool);
     callback set-auto-gain(bool);
     callback set-autostart(bool);
+    callback set-sounds(bool);
     callback set-close-to-tray(bool);
     callback sign-out();
 }
@@ -308,6 +310,14 @@ export component SettingsPage inherits Rectangle {
 
                 Section {
                     title: "APP";
+                    SettingRow {
+                        title: "Sounds";
+                        description: "A short sound when you mute or deafen, and a ringtone for calls.";
+                        Toggle {
+                            checked: SettingsUi.view.sounds;
+                            toggled(on) => { SettingsUi.set-sounds(on); }
+                        }
+                    }
                     SettingRow {
                         title: "Start with Windows";
                         description: "Starts hidden in the tray when you sign in.";

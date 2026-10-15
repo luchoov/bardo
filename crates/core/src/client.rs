@@ -43,8 +43,12 @@ pub enum ClientEvent {
 pub enum Command {
     /// Server mute, server deafen, move or disconnect a guild member.
     ModifyMember { guild_id: Id, user_id: Id, change: MemberChange },
-    /// Join a guild voice channel, or switch to it.
-    JoinVoice { guild_id: Id, channel_id: Id },
+    /// Join a guild voice channel, or a DM or group call with `guild_id: None`, or switch to it.
+    JoinVoice { guild_id: Option<Id>, channel_id: Id },
+    /// Join a DM or group call and ring the others, unless someone is already in it.
+    StartCall { channel_id: Id },
+    /// Stop a call from ringing us.
+    DeclineCall { channel_id: Id },
     LeaveVoice,
     SetSelfMute(bool),
     SetSelfDeaf(bool),
@@ -161,7 +165,7 @@ async fn run(
     // Background tasks report back through this channel, so `on_event` is only called from here.
     let (internal_tx, mut internal) = mpsc::unbounded_channel();
 
-    let mut session = Session::new(internal_tx.clone(), transmit);
+    let mut session = Session::new(internal_tx.clone(), transmit, http.clone());
     loop {
         let first = tokio::select! {
             _ = &mut shutdown => {
@@ -228,11 +232,18 @@ struct Session {
     supplemental_received: bool,
     requested_members: HashSet<(Id, Id)>,
     watched_guilds: HashSet<Id>,
+    http: Arc<Http>,
+    internal: mpsc::UnboundedSender<Internal>,
+    /// A call we started: the others are rung once we are connected.
+    ring_when_connected: Option<Id>,
 }
 
 impl Session {
-    fn new(internal: mpsc::UnboundedSender<Internal>, transmit: Arc<TransmitControl>) -> Self {
+    fn new(internal: mpsc::UnboundedSender<Internal>, transmit: Arc<TransmitControl>, http: Arc<Http>) -> Self {
         Self {
+            http,
+            internal: internal.clone(),
+            ring_when_connected: None,
             store: Store::default(),
             session_id: String::new(),
             voice: VoiceSession::default(),
@@ -329,6 +340,33 @@ impl Session {
         if self.settle_voice(outcome, gateway, on_event) {
             self.publish(on_event);
         }
+        self.ring_if_connected();
+    }
+
+    fn ring_if_connected(&mut self) {
+        let Some(channel_id) = self.ring_when_connected else { return };
+        if self.voice.connected_channel() != Some(channel_id) {
+            return;
+        }
+        self.ring_when_connected = None;
+        info!(%channel_id, "ringing");
+        self.spawn_request("ring", move |http| async move { http.ring(channel_id, None).await });
+    }
+
+    /// Runs a REST request in the background and reports a failure as a notice.
+    fn spawn_request<F, Fut>(&self, what: &'static str, request: F)
+    where
+        F: FnOnce(Arc<Http>) -> Fut,
+        Fut: Future<Output = Result<(), bardo_api::Error>> + Send + 'static,
+    {
+        let internal = self.internal.clone();
+        let request = request(self.http.clone());
+        tokio::spawn(async move {
+            if let Err(e) = request.await {
+                warn!("{what} failed: {e}");
+                let _ = internal.send(Internal::Event(ClientEvent::Notice(format!("Couldn't {what}: {e}"))));
+            }
+        });
     }
 
     fn execute(
@@ -353,8 +391,29 @@ impl Session {
                 });
                 return;
             }
-            Command::JoinVoice { guild_id, channel_id } => self.voice.join(guild_id, channel_id),
-            Command::LeaveVoice => self.voice.leave(),
+            Command::JoinVoice { guild_id, channel_id } => {
+                self.ring_when_connected = None;
+                self.voice.join(guild_id, channel_id)
+            }
+            Command::StartCall { channel_id } => {
+                let me = self.store.me.as_ref().map(|me| me.id);
+                let someone_there = self.store.calls.get(&channel_id).is_some_and(|call| {
+                    call.voice_states.keys().any(|&user_id| Some(user_id) != me)
+                });
+                self.ring_when_connected = (!someone_there).then_some(channel_id);
+                self.voice.join(None, channel_id)
+            }
+            Command::DeclineCall { channel_id } => {
+                let Some(me) = self.store.me.as_ref().map(|me| me.id) else { return };
+                self.spawn_request("decline the call", move |http| async move {
+                    http.stop_ringing(channel_id, &[me]).await
+                });
+                return;
+            }
+            Command::LeaveVoice => {
+                self.ring_when_connected = None;
+                self.voice.leave()
+            }
             Command::SetSelfMute(mute) => self.voice.set_self_mute(mute),
             Command::SetSelfDeaf(deaf) => self.voice.set_self_deaf(deaf),
             Command::SetUserAudio { user_id, audio } => {
@@ -402,7 +461,7 @@ impl Session {
         if !self.supplemental_received {
             return;
         }
-        let in_voice = self.voice.view(&self.store).map(|voice| voice.guild_id);
+        let in_voice = self.voice.view(&self.store).and_then(|voice| voice.guild_id);
         let wanted = |guild_id| self.watched_guilds.contains(&guild_id) || in_voice == Some(guild_id);
         for (guild_id, users) in self.store.unresolved_voice_users(wanted) {
             let users: Vec<Id> = users

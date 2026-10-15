@@ -3,12 +3,92 @@ import {
     Avatar, Button, ButtonKind, IconButton, MenuDivider, MenuRow, MenuSurface, ScrollArea, Slider, TextField,
 } from "controls.slint";
 import {
-    Api, ChannelRow, GuildRow, HintRow, MoreRow, ParticipantRow, PersonRow, PlaceRow, Row, RowKind, SectionRow,
-    Target,
+    Api, CallRow, ChannelRow, GuildRow, HintRow, MoreRow, ParticipantRow, PersonRow, PlaceRow, Row, RowKind,
+    SectionRow, Target,
 } from "rows.slint";
 import { SettingsPage, SettingsUi, SettingsView } from "settings.slint";
 
 export { Api, Row, RowKind, SettingsUi, SettingsView, Target }
+
+// A call ringing us.
+export struct IncomingCall {
+    active: bool,
+    channel-id: string,
+    name: string,
+    initial: string,
+    group: bool,
+}
+
+component IncomingCallCard inherits Rectangle {
+    in property <IncomingCall> call;
+    callback accept();
+    callback decline();
+
+    background: Theme.surface;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: Theme.shadow;
+    height: card.preferred-height;
+    card := HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                pulse := Rectangle {
+                    border-radius: self.width / 2;
+                    border-width: 2px;
+                    border-color: Theme.ok;
+                    opacity: 0.4 + 0.6 * abs(sin(animation-tick() * 180deg / 0.8s));
+                }
+                Avatar {
+                    x: 3px;
+                    y: 3px;
+                    size: 34px;
+                    initial: root.call.initial;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.call.name;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.call.group ? "Group call" : "Incoming call";
+                color: Theme.text-3;
+                font-size: 11.5px;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: Glyph.hang-up;
+                active: true;
+                clicked => { root.decline(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: Glyph.phone;
+                active: true;
+                active-color: Theme.ok;
+                clicked => { root.accept(); }
+            }
+        }
+    }
+}
 
 // Our own voice connection, shown above the user panel.
 export struct VoiceBar {
@@ -231,6 +311,7 @@ export component MainWindow inherits Window {
     in property <bool> self-mute;
     in property <bool> self-deaf;
     in property <bool> settings-open;
+    in property <IncomingCall> incoming;
     in-out property <string> search;
     callback sign-in(string);
     callback dismiss-notice();
@@ -240,6 +321,8 @@ export component MainWindow inherits Window {
     callback search-edited(string);
     // Enter in the search field: join the first result.
     callback search-accepted();
+    callback accept-call(string);
+    callback decline-call(string);
 
     // The open context menu.
     property <Row> menu-row;
@@ -313,6 +396,15 @@ export component MainWindow inherits Window {
                 height: 1px;
                 background: Theme.border;
             }
+            if root.incoming.active: VerticalLayout {
+                padding: 10px;
+                padding-bottom: 4px;
+                IncomingCallCard {
+                    call: root.incoming;
+                    accept => { root.accept-call(root.incoming.channel-id); }
+                    decline => { root.decline-call(root.incoming.channel-id); }
+                }
+            }
             Rectangle {
                 vertical-stretch: 1;
                 list := ScrollArea {
@@ -328,6 +420,7 @@ export component MainWindow inherits Window {
                                 : row.kind == RowKind.participant ? 30px
                                 : row.kind == RowKind.more ? 26px
                                 : row.kind == RowKind.place ? 40px
+                                : row.kind == RowKind.call ? 40px
                                 : 52px;
                             if row.kind == RowKind.section: SectionRow { item: row; }
                             if row.kind == RowKind.person: PersonRow {
@@ -352,6 +445,7 @@ export component MainWindow inherits Window {
                             if row.kind == RowKind.more: MoreRow { item: row; }
                             if row.kind == RowKind.hint: HintRow { item: row; }
                             if row.kind == RowKind.place: PlaceRow { item: row; }
+                            if row.kind == RowKind.call: CallRow { item: row; }
                         }
                     }
                 }
@@ -493,6 +587,14 @@ export component MainWindow inherits Window {
                         }
                     }
                     if !root.menu-row.is-me || root.menu-row.can-mute || root.menu-row.can-deafen: MenuDivider { }
+                    if root.menu-row.call-id != "" && !root.menu-row.is-me: MenuRow {
+                        text: "Call";
+                        icon: Glyph.phone;
+                        clicked => {
+                            Api.start-call(root.menu-row.call-id);
+                            menu.close();
+                        }
+                    }
                     if root.menu-row.kind == RowKind.person && root.menu-row.can-connect && !root.menu-row.current: MenuRow {
                         text: "Join their channel";
                         icon: Glyph.join;

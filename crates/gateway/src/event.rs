@@ -27,6 +27,9 @@ pub enum Event {
     /// Added or changed (a nickname, say).
     RelationshipAdd(Relationship),
     RelationshipRemove(Relationship),
+    CallCreate(Call),
+    CallUpdate(Call),
+    CallDelete(CallDelete),
     Other(String),
 }
 
@@ -57,6 +60,9 @@ impl Event {
             "VOICE_SERVER_UPDATE" => Event::VoiceServerUpdate(de(data)?),
             "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => Event::RelationshipAdd(de(data)?),
             "RELATIONSHIP_REMOVE" => Event::RelationshipRemove(de(data)?),
+            "CALL_CREATE" => Event::CallCreate(de(data)?),
+            "CALL_UPDATE" => Event::CallUpdate(de(data)?),
+            "CALL_DELETE" => Event::CallDelete(de(data)?),
             other => Event::Other(other.to_owned()),
         })
     }
@@ -134,6 +140,20 @@ mod tests {
             panic!("expected RELATIONSHIP_REMOVE")
         };
         assert!(removed.user.is_none());
+    }
+
+    #[test]
+    fn calls_parse() {
+        let Event::CallCreate(call) = parse(
+            "CALL_CREATE",
+            r#"{"channel_id": "5", "message_id": "6", "region": "brazil", "ringing": ["2"],
+                "voice_states": [{"user_id": "1", "channel_id": "5", "guild_id": null, "session_id": "s"}]}"#,
+        ) else {
+            panic!("expected CALL_CREATE")
+        };
+        assert_eq!((call.channel_id, call.ringing.as_slice()), (Id(5), [Id(2)].as_slice()));
+        assert_eq!(call.voice_states[0].guild_id, None);
+        assert!(matches!(parse("CALL_DELETE", r#"{"channel_id": "5"}"#), Event::CallDelete(_)));
     }
 
     #[test]

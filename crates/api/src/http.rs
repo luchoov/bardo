@@ -92,6 +92,29 @@ impl Http {
         self.request(&route, Some(&change.body())).await.map(drop)
     }
 
+    /// `POST /channels/{channel}/call/ring`: rings `recipients`, or everyone in the DM or group.
+    pub async fn ring(&self, channel_id: Id, recipients: Option<&[Id]>) -> Result<(), Error> {
+        let route = Route {
+            method: Method::POST,
+            path: format!("/channels/{channel_id}/call/ring"),
+            key: "POST /channels/{channel_id}/call/ring",
+            major: channel_id,
+        };
+        self.request(&route, Some(&json!({ "recipients": recipients }))).await.map(drop)
+    }
+
+    /// `POST /channels/{channel}/call/stop-ringing`: stops ringing `recipients`; for ourselves,
+    /// that declines the call.
+    pub async fn stop_ringing(&self, channel_id: Id, recipients: &[Id]) -> Result<(), Error> {
+        let route = Route {
+            method: Method::POST,
+            path: format!("/channels/{channel_id}/call/stop-ringing"),
+            key: "POST /channels/{channel_id}/call/stop-ringing",
+            major: channel_id,
+        };
+        self.request(&route, Some(&json!({ "recipients": recipients }))).await.map(drop)
+    }
+
     async fn request(&self, route: &Route, body: Option<&Value>) -> Result<Vec<u8>, Error> {
         let bucket_lock = self.limiter.bucket(route.key, route.major.0);
         let mut bucket = bucket_lock.lock().await;

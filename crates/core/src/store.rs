@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use bardo_gateway::{
-    Channel, Event, GatewayGuild, Id, Member, Ready, ReadySupplemental, Relationship, Role, User, VoiceState,
-    relationship_kind,
+    Call, Channel, Event, GatewayGuild, Id, Member, Ready, ReadySupplemental, Relationship, Role, User, VoiceState,
+    channel_kind, relationship_kind,
 };
 
 #[derive(Default)]
@@ -17,6 +17,16 @@ pub struct Store {
     pub private_channels: HashMap<Id, Channel>,
     /// Our friends, with the nickname we gave them.
     pub friends: HashMap<Id, Option<String>>,
+    /// Calls in DMs and group DMs, by channel.
+    pub calls: HashMap<Id, CallState>,
+}
+
+#[derive(Debug, Default)]
+pub struct CallState {
+    /// Users being rung.
+    pub ringing: Vec<Id>,
+    /// Who is in the call, keyed by user id.
+    pub voice_states: HashMap<Id, VoiceState>,
 }
 
 pub struct Guild {
@@ -111,9 +121,17 @@ impl Store {
             }
             Event::VoiceStateUpdate(state) => match state.guild_id {
                 Some(guild_id) => self.upsert_voice_state(guild_id, *state),
-                // DM and group calls are not tracked yet.
-                None => return false,
+                None => self.upsert_call_voice_state(*state),
             },
+            Event::CallCreate(call) => {
+                let Call { channel_id, ringing, voice_states } = call;
+                let voice_states = voice_states.into_iter().map(|state| (state.user_id, state)).collect();
+                self.calls.insert(channel_id, CallState { ringing, voice_states });
+            }
+            Event::CallUpdate(call) => self.calls.entry(call.channel_id).or_default().ringing = call.ringing,
+            Event::CallDelete(deleted) => {
+                self.calls.remove(&deleted.channel_id);
+            }
             Event::RelationshipAdd(relationship) => self.upsert_relationship(relationship),
             Event::RelationshipRemove(relationship) => {
                 self.friends.remove(&relationship.id);
@@ -161,7 +179,9 @@ impl Store {
         self.users = ready.users.into_iter().map(|u| (u.id, u)).collect();
         self.users.insert(ready.user.id, ready.user.clone());
         self.me = Some(ready.user);
-        self.private_channels = ready.private_channels.into_iter().map(|c| (c.id, c)).collect();
+        for channel in ready.private_channels {
+            self.upsert_channel(channel);
+        }
         for relationship in ready.relationships {
             self.upsert_relationship(relationship);
         }
@@ -246,9 +266,53 @@ impl Store {
                 }
             }
             None => {
+                let mut channel = channel;
+                // CHANNEL_CREATE embeds the recipients; READY only references them.
+                for user in channel.recipients.drain(..) {
+                    if !channel.recipient_ids.contains(&user.id) {
+                        channel.recipient_ids.push(user.id);
+                    }
+                    self.users.insert(user.id, user);
+                }
                 self.private_channels.insert(channel.id, channel);
             }
         }
+    }
+
+    /// A user's voice state in a DM or group call. Being in one call means leaving any other.
+    fn upsert_call_voice_state(&mut self, state: VoiceState) {
+        for call in self.calls.values_mut() {
+            call.voice_states.remove(&state.user_id);
+        }
+        if let Some(channel_id) = state.channel_id {
+            self.calls.entry(channel_id).or_default().voice_states.insert(state.user_id, state);
+        }
+    }
+
+    /// How we call a user: our nickname for them, then their global name, then their username.
+    pub fn user_name(&self, user_id: Id) -> String {
+        self.friend_name(user_id)
+            .or_else(|| self.users.get(&user_id).map(|user| user.display_name().to_owned()))
+            .unwrap_or_else(|| user_id.to_string())
+    }
+
+    /// A DM is named after the other person; a group after its name, or its members.
+    pub fn private_channel_name(&self, channel: &Channel) -> String {
+        if let Some(name) = channel.name.as_ref().filter(|name| !name.is_empty()) {
+            return name.clone();
+        }
+        let me = self.me.as_ref().map(|me| me.id);
+        let names: Vec<String> = channel
+            .recipient_ids
+            .iter()
+            .filter(|&&id| Some(id) != me)
+            .map(|&id| self.user_name(id))
+            .collect();
+        if names.is_empty() { "Unnamed group".to_owned() } else { names.join(", ") }
+    }
+
+    pub fn is_group(channel: &Channel) -> bool {
+        channel.kind == channel_kind::GROUP_DM
     }
 
     fn upsert_member(&mut self, guild_id: Id, mut member: Member) {

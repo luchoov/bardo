@@ -103,6 +103,8 @@ pub struct VoiceSettings {
     /// Our mute and deafen, kept across restarts like in the official client.
     pub self_mute: bool,
     pub self_deaf: bool,
+    /// Short sounds when muting and deafening, and the ringtone.
+    pub sounds: bool,
 }
 
 impl VoiceSettings {
@@ -125,6 +127,7 @@ impl Default for VoiceSettings {
             auto_gain: true,
             self_mute: false,
             self_deaf: false,
+            sounds: true,
         }
     }
 }

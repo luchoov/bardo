@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use bardo_core::{ChannelView, FriendInVoice, GuildView, Id, Participant, Snapshot};
+use bardo_core::{CallView, ChannelView, FriendInVoice, GuildView, Id, Participant, Snapshot};
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::{
@@ -51,7 +51,7 @@ impl Context<'_> {
     }
 
     fn current_guild(&self) -> Option<Id> {
-        self.snapshot.voice.as_ref().map(|voice| voice.guild_id)
+        self.snapshot.voice.as_ref().and_then(|voice| voice.guild_id)
     }
 
     /// Servers listed in full: the pinned ones, then the one we are in voice in.
@@ -82,7 +82,7 @@ pub fn watched_guilds(cx: &Context) -> HashSet<Id> {
     watched
 }
 
-/// The channel the first search result leads to.
+/// The channel the first search result leads to; the guild is empty for DMs and groups.
 pub fn first_result(rows: &[Row]) -> Option<(String, String)> {
     rows.iter()
         .find(|row| matches!(row.kind, RowKind::Person | RowKind::Place) && row.can_connect && !row.current)
@@ -91,6 +91,13 @@ pub fn first_result(rows: &[Row]) -> Option<(String, String)> {
 
 fn browse(cx: &Context) -> Vec<Row> {
     let mut rows = Vec::new();
+
+    if !cx.snapshot.calls.is_empty() {
+        rows.push(section("calls", "CALLS", cx.snapshot.calls.len(), None));
+        for call in &cx.snapshot.calls {
+            call_rows(cx, call, &mut rows);
+        }
+    }
 
     let friends: Vec<&FriendInVoice> = cx
         .snapshot
@@ -167,10 +174,32 @@ fn search(cx: &Context, query: &str) -> Vec<Row> {
     places.truncate(MAX_RESULTS);
     people.truncate(MAX_RESULTS);
 
+    let calls: Vec<Row> = cx
+        .snapshot
+        .private_channels
+        .iter()
+        .filter(|channel| channel.name.to_lowercase().contains(query))
+        .take(MAX_RESULTS)
+        .map(|channel| Row {
+            kind: RowKind::Place,
+            id: id(channel.id),
+            label: channel.name.as_str().into(),
+            sublabel: if channel.group { "Group · call everyone" } else { "Direct message · call" }.into(),
+            channel_id: id(channel.id),
+            can_connect: true,
+            current: current == Some(channel.id),
+            ..Default::default()
+        })
+        .collect();
+
     let mut rows = Vec::new();
     if !places.is_empty() {
         rows.push(section("channels", "CHANNELS", places.len(), None));
         rows.extend(places);
+    }
+    if !calls.is_empty() {
+        rows.push(section("direct", "DIRECT MESSAGES", calls.len(), None));
+        rows.extend(calls);
     }
     if !people.is_empty() {
         rows.push(section("people", "PEOPLE IN VOICE", people.len(), None));
@@ -190,6 +219,60 @@ fn section(key: &str, label: &str, count: usize, expanded: Option<bool>) -> Row 
         expanded: expanded.unwrap_or(true),
         ..Default::default()
     }
+}
+
+fn call_rows(cx: &Context, call: &CallView, rows: &mut Vec<Row>) {
+    let current = cx.current_channel() == Some(call.channel_id);
+    let others = call.participants.iter().filter(|p| !p.is_me).count();
+    rows.push(Row {
+        kind: RowKind::Call,
+        id: id(call.channel_id),
+        label: call.name.as_str().into(),
+        sublabel: if call.ringing_me {
+            "Calling you".into()
+        } else if current && others == 0 {
+            "Ringing…".into()
+        } else if call.participants.len() == 1 {
+            "1 in the call".into()
+        } else {
+            format!("{} in the call", call.participants.len()).into()
+        },
+        channel_id: id(call.channel_id),
+        count: call.participants.len() as i32,
+        can_connect: true,
+        current,
+        pinned: call.group,
+        ..Default::default()
+    });
+    for participant in &call.participants {
+        let audio = cx.settings.user(participant.user_id);
+        rows.push(Row {
+            kind: RowKind::Participant,
+            id: id(participant.user_id),
+            label: participant.name.as_str().into(),
+            channel_id: id(call.channel_id),
+            current,
+            initial: initial(&participant.name).into(),
+            self_mute: participant.self_mute,
+            self_deaf: participant.self_deaf,
+            live: participant.streaming,
+            speaking: current && cx.speaking.contains(&participant.user_id),
+            is_me: participant.is_me,
+            local_mute: audio.muted && !participant.is_me,
+            volume: i32::from(audio.volume),
+            ..Default::default()
+        });
+    }
+}
+
+/// The DM channel to call a user in, if we have one with them.
+fn dm_with(cx: &Context, user_id: Id) -> SharedString {
+    cx.snapshot
+        .private_channels
+        .iter()
+        .find(|channel| !channel.group && channel.recipients.contains(&user_id))
+        .map(|channel| id(channel.id))
+        .unwrap_or_default()
 }
 
 fn guild_rows(cx: &Context, guild: &GuildView, expanded: bool, rows: &mut Vec<Row>) {
@@ -281,6 +364,7 @@ fn participant_fields(cx: &Context, guild: &GuildView, channel: &ChannelView, pa
         can_mute: participant.moderation.mute,
         can_deafen: participant.moderation.deafen,
         can_move: participant.moderation.move_,
+        call_id: if participant.is_me { SharedString::new() } else { dm_with(cx, participant.user_id) },
         ..Default::default()
     }
 }
@@ -319,6 +403,7 @@ fn friend_row(cx: &Context, friend: &FriendInVoice) -> Row {
         live: friend.streaming,
         local_mute: audio.muted,
         volume: i32::from(audio.volume),
+        call_id: dm_with(cx, friend.user_id),
         ..Default::default()
     }
 }
@@ -445,7 +530,7 @@ mod tests {
     fn the_server_we_are_in_is_always_listed() {
         let mut snapshot = snapshot();
         snapshot.voice = Some(VoiceView {
-            guild_id: Id(2),
+            guild_id: Some(Id(2)),
             channel_id: Id(20),
             guild_name: "Big public server".to_owned(),
             channel_name: "Lobby".to_owned(),
@@ -461,6 +546,37 @@ mod tests {
         let settings = Settings::default();
         let cx = Context { snapshot: &snapshot, settings: &settings, speaking: &speaking, list: &list };
         assert_eq!(watched_guilds(&cx), HashSet::from([Id(2)]));
+    }
+
+    #[test]
+    fn calls_come_first_and_search_finds_dms() {
+        let mut snapshot = snapshot();
+        snapshot.calls = vec![CallView {
+            channel_id: Id(50),
+            name: "Bobby".to_owned(),
+            group: false,
+            participants: vec![participant(200, "Bobby")],
+            ringing_me: true,
+        }];
+        snapshot.private_channels = vec![bardo_core::PrivateChannelView {
+            id: Id(50),
+            name: "Bobby".to_owned(),
+            group: false,
+            recipients: vec![Id(200)],
+        }];
+        let labels = labels(&snapshot, &Settings::default(), &ListState::default());
+        assert_eq!(labels[..3], ["CALLS", "Bobby", "Bobby"]);
+
+        let list = ListState { query: "bob".to_owned(), ..Default::default() };
+        let speaking = HashSet::new();
+        let settings = Settings::default();
+        let cx = Context { snapshot: &snapshot, settings: &settings, speaking: &speaking, list: &list };
+        let rows = rows(&cx);
+        let dm = rows.iter().find(|row| row.kind == RowKind::Place && row.guild_id.is_empty()).unwrap();
+        assert_eq!(dm.channel_id, "50");
+        // Bob, in voice in a server, can be called in his DM.
+        let bob = rows.iter().find(|row| row.kind == RowKind::Person).unwrap();
+        assert_eq!(bob.call_id, "50");
     }
 
     #[test]

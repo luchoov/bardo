@@ -1,6 +1,6 @@
 //! UI-agnostic view of the state, rebuilt whenever the store changes.
 
-use bardo_gateway::{Channel, Id, channel_kind};
+use bardo_gateway::{Channel, Id, VoiceState, channel_kind};
 
 use crate::{
     permissions::{self, CONNECT, DEAFEN_MEMBERS, MOVE_MEMBERS, MUTE_MEMBERS, VIEW_CHANNEL},
@@ -19,6 +19,28 @@ pub struct Snapshot {
     pub friends_in_voice: Vec<FriendInVoice>,
     /// Our own user id and name, once known.
     pub me: Option<(Id, String)>,
+    /// Calls in DMs and groups that have someone in them or are ringing us.
+    pub calls: Vec<CallView>,
+    /// DMs and groups we can call, most recently active first.
+    pub private_channels: Vec<PrivateChannelView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallView {
+    pub channel_id: Id,
+    pub name: String,
+    pub group: bool,
+    pub participants: Vec<Participant>,
+    /// Someone is calling us.
+    pub ringing_me: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrivateChannelView {
+    pub id: Id,
+    pub name: String,
+    pub group: bool,
+    pub recipients: Vec<Id>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,7 +67,8 @@ pub enum VoiceStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceView {
-    pub guild_id: Id,
+    /// `None` for DM and group calls.
+    pub guild_id: Option<Id>,
     pub channel_id: Id,
     pub guild_name: String,
     pub channel_name: String,
@@ -139,9 +162,69 @@ impl Snapshot {
             guilds,
             friends_in_voice,
             me: Some((me.id, me.display_name().to_owned())),
+            calls: calls(store, me.id),
+            private_channels: private_channels(store),
             ..Self::default()
         }
     }
+}
+
+fn calls(store: &Store, me: Id) -> Vec<CallView> {
+    let mut calls: Vec<CallView> = store
+        .calls
+        .iter()
+        .filter_map(|(&channel_id, call)| {
+            let channel = store.private_channels.get(&channel_id);
+            let ringing_me = call.ringing.contains(&me);
+            let mut participants: Vec<Participant> =
+                call.voice_states.values().map(|state| call_participant(store, state, me)).collect();
+            participants.sort_by_cached_key(|p| p.name.to_lowercase());
+            (ringing_me || !participants.is_empty()).then(|| CallView {
+                channel_id,
+                name: channel.map(|channel| store.private_channel_name(channel)).unwrap_or_else(|| "Call".to_owned()),
+                group: channel.is_some_and(Store::is_group),
+                participants,
+                ringing_me,
+            })
+        })
+        .collect();
+    calls.sort_by_key(|call| call.channel_id);
+    calls
+}
+
+fn call_participant(store: &Store, state: &VoiceState, me: Id) -> Participant {
+    Participant {
+        user_id: state.user_id,
+        name: store.user_name(state.user_id),
+        self_mute: state.self_mute,
+        self_deaf: state.self_deaf,
+        server_mute: state.mute,
+        server_deaf: state.deaf,
+        streaming: state.self_stream,
+        video: state.self_video,
+        is_me: state.user_id == me,
+        is_friend: store.friends.contains_key(&state.user_id),
+        moderation: Moderation::default(),
+    }
+}
+
+fn private_channels(store: &Store) -> Vec<PrivateChannelView> {
+    let mut channels: Vec<_> = store
+        .private_channels
+        .values()
+        .filter(|channel| matches!(channel.kind, channel_kind::DM | channel_kind::GROUP_DM))
+        .filter(|channel| !channel.recipient_ids.is_empty())
+        .collect();
+    channels.sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id.unwrap_or(channel.id)));
+    channels
+        .into_iter()
+        .map(|channel| PrivateChannelView {
+            id: channel.id,
+            name: store.private_channel_name(channel),
+            group: Store::is_group(channel),
+            recipients: channel.recipient_ids.clone(),
+        })
+        .collect()
 }
 
 fn friends_in_voice(store: &Store, guilds: &[GuildView]) -> Vec<FriendInVoice> {
@@ -322,6 +405,34 @@ mod tests {
         let snapshot = Snapshot::build(&store);
         let channel = snapshot.guilds[0].channels.iter().find(|c| c.id == Id(21)).unwrap();
         assert_eq!(channel.participants.len(), 1);
+    }
+
+    #[test]
+    fn lists_calls_that_ring_us_or_have_people() {
+        let mut store = store();
+        let dm = r#"{"id": "50", "type": 1, "recipients": [{"id": "2", "username": "zed", "global_name": "Zed"}]}"#;
+        store.apply(Event::ChannelCreate(serde_json::from_str(dm).unwrap()));
+        let group = r#"{"id": "51", "type": 3, "recipient_ids": ["2", "3"], "last_message_id": "900"}"#;
+        store.apply(Event::ChannelCreate(serde_json::from_str(group).unwrap()));
+        store.apply(Event::CallCreate(serde_json::from_str(r#"{"channel_id": "50", "ringing": ["1"]}"#).unwrap()));
+        let joined = r#"{"user_id": "2", "channel_id": "51", "session_id": "x"}"#;
+        store.apply(Event::VoiceStateUpdate(Box::new(serde_json::from_str(joined).unwrap())));
+
+        let snapshot = Snapshot::build(&store);
+        let calls: Vec<(&str, bool, usize)> =
+            snapshot.calls.iter().map(|c| (c.name.as_str(), c.ringing_me, c.participants.len())).collect();
+        assert_eq!(calls, [("Zed", true, 0), ("Zed, 3", false, 1)]);
+        let channels: Vec<&str> = snapshot.private_channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(channels, ["Zed, 3", "Zed"]);
+
+        // Joining the DM call leaves the group call.
+        let moved = r#"{"user_id": "2", "channel_id": "50", "session_id": "x"}"#;
+        store.apply(Event::VoiceStateUpdate(Box::new(serde_json::from_str(moved).unwrap())));
+        store.apply(Event::CallUpdate(serde_json::from_str(r#"{"channel_id": "50", "ringing": []}"#).unwrap()));
+        let snapshot = Snapshot::build(&store);
+        assert_eq!(snapshot.calls.len(), 1);
+        assert_eq!(snapshot.calls[0].participants[0].name, "Zed");
+        assert!(!snapshot.calls[0].ringing_me);
     }
 
     #[test]
