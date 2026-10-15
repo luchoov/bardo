@@ -19,6 +19,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 windows-native-keyring-store = "1.1.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",

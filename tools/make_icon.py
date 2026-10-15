@@ -62,11 +62,23 @@ def render(variant='dark', small=False):
     return img
 
 
+def with_badge(img):
+    """The tray icon while muted or deafened: a red dot in the corner, cut out of the tile."""
+    img = img.copy()
+    d = ImageDraw.Draw(img)
+    cx = cy = S - 230
+    r = 200
+    d.ellipse((cx - r - 44, cy - r - 44, cx + r + 44, cy + r + 44), fill=(0, 0, 0, 0))
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(240, 86, 91, 255))
+    return img
+
+
 def save(out_dir, variant):
     big, small = render(variant), render(variant, small=True)
     sizes = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
     frames = [(small if s <= 32 else big).resize((s, s), Image.LANCZOS) for s in sizes]
     big.resize((512, 512), Image.LANCZOS).save(out_dir + '/icon.png')
+    with_badge(small).resize((64, 64), Image.LANCZOS).save(out_dir + '/tray-muted.png')
     frames[-1].save(out_dir + '/bardo.ico', sizes=[(s, s) for s in sizes], append_images=frames[:-1])
 
 

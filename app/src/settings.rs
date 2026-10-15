@@ -72,16 +72,20 @@ pub struct HotkeySettings {
     pub toggle_deafen: Option<Binding>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowSettings {
     /// The close button hides bardo in the tray instead of quitting.
     pub close_to_tray: bool,
+    /// Logical size, as last left.
+    pub size: Option<[f32; 2]>,
+    /// Physical position of the top-left corner, as last left.
+    pub position: Option<[i32; 2]>,
 }
 
 impl Default for WindowSettings {
     fn default() -> Self {
-        Self { close_to_tray: true }
+        Self { close_to_tray: true, size: None, position: None }
     }
 }
 

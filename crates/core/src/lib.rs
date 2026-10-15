@@ -2,6 +2,7 @@
 //! receive events.
 
 mod client;
+mod mic_test;
 pub mod permissions;
 mod snapshot;
 mod store;
@@ -10,6 +11,7 @@ mod voice;
 pub use bardo_api::MemberChange;
 pub use bardo_gateway::{ConnectionState, Id};
 pub use client::{Client, ClientEvent, Command};
+pub use mic_test::MicTest;
 pub use snapshot::{
     CallView, ChannelView, FriendInVoice, GuildView, Moderation, Participant, PrivateChannelView, Snapshot,
     VoiceStatus, VoiceView,

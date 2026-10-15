@@ -11,7 +11,7 @@ mod win;
 use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Duration};
 
 use bardo_core::{
-    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, Ringer, SILENCE_DB,
+    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest, Ringer,
     Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -82,6 +82,8 @@ struct App {
     ringer: Option<Ringer>,
     /// The call that is ringing us, so a new one flashes the taskbar again.
     ringing: Option<Id>,
+    /// Meters the microphone while the settings are open outside voice.
+    mic_test: Option<MicTest>,
 }
 
 thread_local! {
@@ -143,11 +145,18 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     APP.with_borrow_mut(|app| app.tray = Some(tray));
 
-    window.window().on_close_requested(|| {
-        if !APP.with_borrow(|app| app.settings.window.close_to_tray) {
-            let _ = slint::quit_event_loop();
+    restore_geometry(&window);
+    window.window().on_close_requested({
+        let weak = window.as_weak();
+        move || {
+            if let Some(window) = weak.upgrade() {
+                save_geometry(&window);
+            }
+            if !APP.with_borrow(|app| app.settings.window.close_to_tray) {
+                let _ = slint::quit_event_loop();
+            }
+            slint::CloseRequestResponse::HideWindow
         }
-        slint::CloseRequestResponse::HideWindow
     });
 
     wire_main(&window);
@@ -178,12 +187,38 @@ fn main() -> Result<(), slint::PlatformError> {
     // Keeps running while the window is hidden in the tray, until "Quit" (or closing the window
     // with close-to-tray off).
     slint::run_event_loop()?;
+    if window.window().is_visible() {
+        save_geometry(&window);
+    }
     window.hide()?;
     APP.with_borrow_mut(|app| app.tray = None);
     if let Some(client) = APP.with_borrow_mut(|app| app.client.take()) {
         client.shutdown();
     }
     Ok(())
+}
+
+fn restore_geometry(window: &MainWindow) {
+    let (size, position) = APP.with_borrow(|app| (app.settings.window.size, app.settings.window.position));
+    if let Some([width, height]) = size {
+        window.window().set_size(slint::LogicalSize::new(width, height));
+    }
+    if let Some([x, y]) = position.filter(|&[x, y]| win::on_screen(x, y)) {
+        window.window().set_position(slint::PhysicalPosition::new(x, y));
+    }
+}
+
+fn save_geometry(window: &MainWindow) {
+    let window = window.window();
+    if window.is_minimized() || window.is_maximized() {
+        return;
+    }
+    let size = window.size().to_logical(window.scale_factor());
+    let position = window.position();
+    update_settings(|settings| {
+        settings.window.size = Some([size.width, size.height]);
+        settings.window.position = Some([position.x, position.y]);
+    });
 }
 
 fn start(window: &MainWindow) {
@@ -330,13 +365,9 @@ fn wire_settings(window: &MainWindow) {
             APP.with_borrow(|app| {
                 app.meter.start(slint::TimerMode::Repeated, METER_INTERVAL, move || {
                     let Some(window) = weak.upgrade() else { return };
-                    let (level, in_voice) = APP.with_borrow(|app| {
-                        let in_voice = app.snapshot.voice.is_some();
-                        (if in_voice { app.transmit.level_db() } else { SILENCE_DB }, in_voice)
-                    });
-                    let ui = window.global::<SettingsUi>();
-                    ui.set_level(level);
-                    ui.set_in_voice(in_voice);
+                    update_mic_test();
+                    let level = APP.with_borrow(|app| app.transmit.level_db());
+                    window.global::<SettingsUi>().set_level(level);
                 });
             });
         }
@@ -346,7 +377,10 @@ fn wire_settings(window: &MainWindow) {
     ui.on_close({
         let weak = window.as_weak();
         move || {
-            APP.with_borrow(|app| app.meter.stop());
+            APP.with_borrow_mut(|app| {
+                app.meter.stop();
+                app.mic_test = None;
+            });
             if let Some(window) = weak.upgrade() {
                 window.set_settings_open(false);
             }
@@ -354,6 +388,8 @@ fn wire_settings(window: &MainWindow) {
     });
     ui.on_select_input(|index| {
         update_voice_settings(|voice, app| voice.input_device = device_at(&app.inputs, index));
+        // The test restarts on the new device.
+        APP.with_borrow_mut(|app| app.mic_test = None);
         send_devices();
         render_settings_now();
     });
@@ -417,8 +453,9 @@ fn wire_settings(window: &MainWindow) {
         let weak = window.as_weak();
         move || {
             let Some(window) = weak.upgrade() else { return };
-            let ephemeral = APP.with_borrow(|app| {
+            let ephemeral = APP.with_borrow_mut(|app| {
                 app.meter.stop();
+                app.mic_test = None;
                 app.settings.ephemeral
             });
             window.set_settings_open(false);
@@ -564,6 +601,26 @@ fn start_call(channel: &str) {
     if let Some(channel_id) = parse_id(channel) {
         send(Command::StartCall { channel_id });
     }
+}
+
+/// Runs the microphone test while the settings are open outside voice; in voice, the voice
+/// connection's own capture feeds the meter.
+fn update_mic_test() {
+    APP.with_borrow_mut(|app| {
+        if app.snapshot.voice.is_some() {
+            app.mic_test = None;
+        } else if app.mic_test.is_none() {
+            match MicTest::start(app.settings.voice.input_device.as_deref(), app.transmit.clone()) {
+                Ok(test) => app.mic_test = Some(test),
+                // Retried on the next tick; say it once.
+                Err(e) if app.meter.running() => {
+                    warn!("could not open the microphone for the level meter: {e}");
+                    app.meter.stop();
+                }
+                Err(_) => {}
+            }
+        }
+    });
 }
 
 /// Starts or stops the ringtone, and shows who is calling.

@@ -739,7 +739,8 @@ export component BardoTray inherits SystemTrayIcon {
     callback leave-voice();
     callback quit();
 
-    icon: @image-url("../assets/icon.png");
+    // A red dot while muted, so it shows at a glance.
+    icon: root.muted ? @image-url("../assets/tray-muted.png") : @image-url("../assets/icon.png");
     tooltip: root.status-text;
     clicked => { root.show-window(); }
 

@@ -34,7 +34,6 @@ export global SettingsUi {
     in-out property <float> input-volume;
     // Input level in dBFS, refreshed while the page is open.
     in property <float> level;
-    in property <bool> in-voice;
     callback close();
     callback select-input(int);
     callback select-output(int);
@@ -238,9 +237,7 @@ export component SettingsPage inherits Rectangle {
                             changed(value) => { SettingsUi.set-threshold(value); }
                         }
                         Text {
-                            text: SettingsUi.in-voice
-                                ? "You transmit while the bar is green."
-                                : "Join a voice channel to see your level.";
+                            text: "Talk to test: you transmit while the bar is green.";
                             color: Theme.text-3;
                             font-size: 11.5px;
                             wrap: word-wrap;

@@ -6,7 +6,8 @@ use std::{ffi::c_void, iter, path::Path, ptr, thread};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::warn;
 use windows_sys::Win32::{
-    Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, HWND},
+    Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, HWND, POINT},
+    Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint},
     System::{
         LibraryLoader::{GetProcAddress, LoadLibraryW},
         Registry::{HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW},
@@ -135,6 +136,13 @@ pub fn claim_single_instance(on_show: impl Fn() + Send + 'static) -> bool {
 struct SendHandle(HANDLE);
 // SAFETY: event handles may be used from any thread.
 unsafe impl Send for SendHandle {}
+
+/// Whether a window placed at `x, y` would have its title bar on a connected monitor.
+pub fn on_screen(x: i32, y: i32) -> bool {
+    let point = POINT { x: x + 60, y: y + 12 };
+    // SAFETY: a plain query.
+    !unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) }.is_null()
+}
 
 fn hwnd(window: &slint::Window) -> Option<HWND> {
     let handle = window.window_handle();
