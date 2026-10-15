@@ -11,7 +11,8 @@ out of the way of your game's frame time and memory.
 - Server mute, deafen, move and disconnect from a right-click menu, for server admins.
 - Runs alongside the official client: keep Discord closed while you play, or use it for text.
 
-> **Status:** early development. Server and voice channel listing works; joining voice is not implemented yet.
+> **Status:** early development. The live server and voice channel list and the moderation menu work;
+> joining voice is not implemented yet.
 
 > **Disclaimer:** bardo is not affiliated with or endorsed by Discord. Using a user account from an
 > unofficial client is against Discord's Terms of Service and may get the account banned. Use at your own risk.
@@ -64,8 +65,9 @@ Threads: a tokio runtime for networking, dedicated real-time threads for audio, 
 
 ## Roadmap
 
-1. Gateway: servers and voice channels with who is in each, live. *(in progress: needs a live test)*
-2. Moderation: context menu (mute/deafen/move/disconnect). Useful without audio.
+1. Gateway: servers and voice channels with who is in each, live. *(done)*
+2. Moderation: context menu (mute/deafen/move/disconnect). Useful without audio. *(done; local volume and
+   mute are stored and take effect once audio lands)*
 3. Voice — receive: join and listen (validates DAVE).
 4. Voice — send: microphone, PTT, VAD.
 5. DM / group calls.
@@ -95,6 +97,9 @@ The token grants full access to the account: never share it or commit it.
 | `BARDO_TOKEN` | Use this token instead of the stored one. |
 | `BARDO_DUMP_DIR` | Write raw `READY`, `READY_SUPPLEMENTAL` and unparseable dispatches to this directory. They contain account data: keep the directory outside the repo. |
 | `RUST_LOG` | Log filter, e.g. `info,bardo_gateway=debug`. Debug builds log to the console. |
+| `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account. |
+
+Per-user volume and local mutes are stored in `%APPDATA%\bardo\settings.json`.
 
 ## References
 

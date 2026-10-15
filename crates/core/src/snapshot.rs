@@ -3,7 +3,7 @@
 use bardo_gateway::{Channel, Id, channel_kind};
 
 use crate::{
-    permissions::{self, VIEW_CHANNEL},
+    permissions::{self, CONNECT, DEAFEN_MEMBERS, MOVE_MEMBERS, MUTE_MEMBERS, VIEW_CHANNEL},
     store::{Guild, Store},
 };
 
@@ -24,6 +24,8 @@ pub struct ChannelView {
     pub id: Id,
     pub name: String,
     pub user_limit: u32,
+    /// Whether we may join it (or move someone into it).
+    pub can_connect: bool,
     pub participants: Vec<Participant>,
 }
 
@@ -37,6 +39,32 @@ pub struct Participant {
     pub server_deaf: bool,
     pub streaming: bool,
     pub video: bool,
+    pub is_me: bool,
+    /// Moderation actions we may take on this participant.
+    pub moderation: Moderation,
+}
+
+/// Moderation actions allowed on a participant, from our permissions in their channel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Moderation {
+    pub mute: bool,
+    pub deafen: bool,
+    /// Move to another channel or disconnect.
+    pub move_: bool,
+}
+
+impl Moderation {
+    pub fn from_permissions(permissions: u64) -> Self {
+        Self {
+            mute: permissions & MUTE_MEMBERS != 0,
+            deafen: permissions & DEAFEN_MEMBERS != 0,
+            move_: permissions & MOVE_MEMBERS != 0,
+        }
+    }
+
+    pub fn any(self) -> bool {
+        self.mute || self.deafen || self.move_
+    }
 }
 
 impl Snapshot {
@@ -75,6 +103,13 @@ fn voice_channels(store: &Store, guild: &Guild, me: Id) -> Vec<ChannelView> {
     channels
         .into_iter()
         .map(|channel| {
+            // Without our own member, assume we may connect but not moderate; Discord has the final word.
+            let permissions = if can_evaluate {
+                permissions::channel_permissions(guild, me, channel)
+            } else {
+                VIEW_CHANNEL | CONNECT
+            };
+            let moderation = Moderation::from_permissions(permissions);
             let mut participants: Vec<Participant> = guild
                 .voice_states
                 .values()
@@ -90,6 +125,8 @@ fn voice_channels(store: &Store, guild: &Guild, me: Id) -> Vec<ChannelView> {
                     server_deaf: state.deaf,
                     streaming: state.self_stream,
                     video: state.self_video,
+                    is_me: state.user_id == me,
+                    moderation,
                 })
                 .collect();
             participants.sort_by_cached_key(|p| p.name.to_lowercase());
@@ -98,6 +135,7 @@ fn voice_channels(store: &Store, guild: &Guild, me: Id) -> Vec<ChannelView> {
                 id: channel.id,
                 name: channel.name.clone().unwrap_or_default(),
                 user_limit: channel.user_limit,
+                can_connect: permissions & CONNECT != 0,
                 participants,
             }
         })
@@ -115,7 +153,7 @@ fn sort_key(guild: &Guild, channel: &Channel) -> (Option<(i32, Id)>, i32, Id) {
 
 #[cfg(test)]
 mod tests {
-    use bardo_gateway::{Event, Ready, ReadySupplemental};
+    use bardo_gateway::{Event, Ready, ReadySupplemental, overwrite_kind};
 
     use super::*;
 
@@ -203,6 +241,92 @@ mod tests {
         let snapshot = Snapshot::build(&store);
         let channel = snapshot.guilds[0].channels.iter().find(|c| c.id == Id(21)).unwrap();
         assert_eq!(channel.participants.len(), 1);
+    }
+
+    fn participant(snapshot: &Snapshot, channel: Id, user: Id) -> Participant {
+        let channel = snapshot.guilds[0].channels.iter().find(|c| c.id == channel).unwrap();
+        channel.participants.iter().find(|p| p.user_id == user).unwrap().clone()
+    }
+
+    fn overwrite(id: Id, kind: u8, allow: u64, deny: u64) -> bardo_gateway::Overwrite {
+        bardo_gateway::Overwrite { id, kind, allow, deny }
+    }
+
+    #[test]
+    fn moderation_requires_the_matching_permission() {
+        let mut store = store();
+        let snapshot = Snapshot::build(&store);
+        assert_eq!(participant(&snapshot, Id(21), Id(2)).moderation, Moderation::default());
+
+        let guild = store.guilds.get_mut(&GUILD).unwrap();
+        guild.roles.get_mut(&Id(30)).unwrap().permissions = MUTE_MEMBERS;
+        let snapshot = Snapshot::build(&store);
+        let moderation = participant(&snapshot, Id(21), Id(2)).moderation;
+        assert_eq!(moderation, Moderation { mute: true, deafen: false, move_: false });
+    }
+
+    #[test]
+    fn moderation_follows_channel_overwrites() {
+        let mut store = store();
+        let guild = store.guilds.get_mut(&GUILD).unwrap();
+        guild.roles.get_mut(&Id(30)).unwrap().permissions = DEAFEN_MEMBERS | MOVE_MEMBERS;
+        // Our role may not move members in channel 21, and nobody may deafen there.
+        guild.channels.get_mut(&Id(21)).unwrap().permission_overwrites = vec![
+            overwrite(GUILD, overwrite_kind::ROLE, 0, DEAFEN_MEMBERS),
+            overwrite(Id(30), overwrite_kind::ROLE, 0, MOVE_MEMBERS),
+        ];
+        let state = serde_json::from_str(r#"{"guild_id": "10", "user_id": "2", "channel_id": "22"}"#).unwrap();
+        store.apply(Event::VoiceStateUpdate(Box::new(state)));
+        let state = serde_json::from_str(r#"{"guild_id": "10", "user_id": "3", "channel_id": "21"}"#).unwrap();
+        store.apply(Event::VoiceStateUpdate(Box::new(state)));
+
+        let snapshot = Snapshot::build(&store);
+        assert_eq!(participant(&snapshot, Id(21), Id(3)).moderation, Moderation::default());
+        assert_eq!(
+            participant(&snapshot, Id(22), Id(2)).moderation,
+            Moderation { mute: false, deafen: true, move_: true }
+        );
+    }
+
+    #[test]
+    fn member_overwrites_can_grant_moderation() {
+        let mut store = store();
+        let guild = store.guilds.get_mut(&GUILD).unwrap();
+        guild.channels.get_mut(&Id(21)).unwrap().permission_overwrites =
+            vec![overwrite(ME, overwrite_kind::MEMBER, MUTE_MEMBERS | MOVE_MEMBERS, 0)];
+        let snapshot = Snapshot::build(&store);
+        let moderation = participant(&snapshot, Id(21), Id(2)).moderation;
+        assert_eq!(moderation, Moderation { mute: true, deafen: false, move_: true });
+        assert!(moderation.any());
+    }
+
+    #[test]
+    fn administrators_may_moderate_anyone() {
+        let mut store = store();
+        let guild = store.guilds.get_mut(&GUILD).unwrap();
+        guild.roles.get_mut(&Id(30)).unwrap().permissions = permissions::ADMINISTRATOR;
+        guild.channels.get_mut(&Id(21)).unwrap().permission_overwrites =
+            vec![overwrite(Id(30), overwrite_kind::ROLE, 0, MUTE_MEMBERS | DEAFEN_MEMBERS | MOVE_MEMBERS)];
+        let snapshot = Snapshot::build(&store);
+        let moderation = participant(&snapshot, Id(21), Id(2)).moderation;
+        assert_eq!(moderation, Moderation { mute: true, deafen: true, move_: true });
+    }
+
+    #[test]
+    fn flags_our_own_participant_and_channels_we_cannot_join() {
+        let mut store = store();
+        let state = serde_json::from_str(r#"{"guild_id": "10", "user_id": "1", "channel_id": "21"}"#).unwrap();
+        store.apply(Event::VoiceStateUpdate(Box::new(state)));
+        let guild = store.guilds.get_mut(&GUILD).unwrap();
+        guild.channels.get_mut(&Id(22)).unwrap().permission_overwrites =
+            vec![overwrite(GUILD, overwrite_kind::ROLE, 0, CONNECT)];
+
+        let snapshot = Snapshot::build(&store);
+        assert!(participant(&snapshot, Id(21), ME).is_me);
+        assert!(!participant(&snapshot, Id(21), Id(2)).is_me);
+        let can_connect: Vec<(Id, bool)> =
+            snapshot.guilds[0].channels.iter().map(|c| (c.id, c.can_connect)).collect();
+        assert_eq!(can_connect, [(Id(22), false), (Id(26), true), (Id(21), true), (Id(24), true)]);
     }
 
     #[test]

@@ -316,10 +316,10 @@ impl Runner {
                         return Err(Error::Closed(None));
                     };
                     let message = message?;
-                    if let Some(bytes) = frame_bytes(&message, &mut inflater)? {
-                        if let Some(exit) = self.handle(bytes, socket, &mut awaiting_ack).await? {
-                            return Ok(exit);
-                        }
+                    if let Some(bytes) = frame_bytes(&message, &mut inflater)?
+                        && let Some(exit) = self.handle(bytes, socket, &mut awaiting_ack).await?
+                    {
+                        return Ok(exit);
                     }
                 }
             }

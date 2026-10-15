@@ -1,18 +1,25 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(debug_assertions)]
+mod demo;
+mod settings;
 mod token;
 
-use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Duration};
 
-use bardo_core::{Client, ClientEvent, ConnectionState, Id, Snapshot};
+use bardo_core::{Client, ClientEvent, Command, ConnectionState, Id, MemberChange, Snapshot};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
+
+use crate::settings::Settings;
 
 slint::include_modules!();
 
 const SCREEN_LOGIN: i32 = 0;
 const SCREEN_MAIN: i32 = 1;
+/// How long an error notice stays up.
+const NOTICE_DURATION: Duration = Duration::from_secs(8);
 
 /// UI-thread state.
 #[derive(Default)]
@@ -21,8 +28,11 @@ struct App {
     /// Bumped on every connect and sign-out so events from a previous client are ignored.
     generation: u64,
     snapshot: Arc<Snapshot>,
+    settings: Settings,
     collapsed: HashSet<Id>,
     rows: Rc<VecModel<Row>>,
+    /// Bumped whenever a notice is shown, so an older notice's timer does not clear a newer one.
+    notice_generation: u64,
 }
 
 thread_local! {
@@ -36,6 +46,7 @@ fn main() -> Result<(), slint::PlatformError> {
     token::init();
 
     let window = MainWindow::new()?;
+    APP.with_borrow_mut(|app| app.settings = Settings::load());
     window.set_rows(ModelRc::from(APP.with_borrow(|app| app.rows.clone())));
 
     window.on_sign_in({
@@ -64,7 +75,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     window.on_toggle_guild(|id| {
-        let Ok(id) = id.parse::<Id>() else { return };
+        let Some(id) = parse_id(&id) else { return };
         APP.with_borrow_mut(|app| {
             if !app.collapsed.remove(&id) {
                 app.collapsed.insert(id);
@@ -72,6 +83,63 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         render();
     });
+
+    window.on_dismiss_notice({
+        let weak = window.as_weak();
+        move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_notice("".into());
+            }
+        }
+    });
+
+    window.on_set_server_mute(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerMute(on)));
+    window.on_set_server_deafen(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerDeafen(on)));
+    window.on_move_member(|guild, user, channel| {
+        if let Some(channel) = parse_id(&channel) {
+            modify_member(&guild, &user, MemberChange::Move(Some(channel)));
+        }
+    });
+    window.on_disconnect_member(|guild, user| modify_member(&guild, &user, MemberChange::Move(None)));
+
+    window.on_set_local_mute(|user, muted| {
+        update_user_audio(&user, |audio| audio.muted = muted);
+    });
+
+    window.on_edit_volume({
+        let weak = window.as_weak();
+        move |user, name| {
+            let (Some(window), Some(user_id)) = (weak.upgrade(), parse_id(&user)) else { return };
+            let volume = APP.with_borrow(|app| app.settings.user(user_id).volume);
+            window.set_volume_value(f32::from(volume));
+            window.set_volume_name(name);
+            window.set_volume_user(user);
+        }
+    });
+
+    window.on_set_volume(|user, volume| {
+        let volume = u16::try_from(volume).unwrap_or_default();
+        update_user_audio(&user, |audio| audio.volume = volume);
+    });
+
+    window.on_close_volume({
+        let weak = window.as_weak();
+        move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_volume_user("".into());
+            }
+        }
+    });
+
+    #[cfg(debug_assertions)]
+    if demo::enabled() {
+        window.set_screen(SCREEN_MAIN);
+        window.set_connected(true);
+        window.set_status("Demo".into());
+        APP.with_borrow_mut(|app| app.snapshot = Arc::new(demo::snapshot()));
+        render();
+        return window.run();
+    }
 
     match token::load() {
         Some(token) => connect(&window, token),
@@ -82,6 +150,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
 fn connect(window: &MainWindow, token: String) {
     window.set_login_error("".into());
+    window.set_notice("".into());
     window.set_screen(SCREEN_MAIN);
     window.set_connected(false);
     window.set_status("Connecting…".into());
@@ -112,6 +181,7 @@ fn disconnect(window: &MainWindow, error: &str) {
         app.collapsed.clear();
     });
     render();
+    window.set_volume_user("".into());
     window.set_login_error(error.into());
     window.set_screen(SCREEN_LOGIN);
 }
@@ -142,7 +212,50 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
                 warn!("failed to store refreshed token: {e}");
             }
         }
+        ClientEvent::CommandFailed(message) => show_notice(window, message),
     }
+}
+
+fn show_notice(window: &MainWindow, message: String) {
+    window.set_notice(message.into());
+    let generation = APP.with_borrow_mut(|app| {
+        app.notice_generation += 1;
+        app.notice_generation
+    });
+    let weak = window.as_weak();
+    slint::Timer::single_shot(NOTICE_DURATION, move || {
+        let current = APP.with_borrow(|app| app.notice_generation);
+        if let (Some(window), true) = (weak.upgrade(), current == generation) {
+            window.set_notice("".into());
+        }
+    });
+}
+
+fn send(command: Command) {
+    APP.with_borrow(|app| {
+        if let Some(client) = &app.client {
+            client.send(command);
+        }
+    });
+}
+
+fn modify_member(guild: &str, user: &str, change: MemberChange) {
+    if let (Some(guild_id), Some(user_id)) = (parse_id(guild), parse_id(user)) {
+        send(Command::ModifyMember { guild_id, user_id, change });
+    }
+}
+
+fn update_user_audio(user: &str, update: impl FnOnce(&mut settings::UserAudio)) {
+    let Some(user_id) = parse_id(user) else { return };
+    APP.with_borrow_mut(|app| {
+        app.settings.update_user(user_id, update);
+        app.settings.save();
+    });
+    render();
+}
+
+fn parse_id(id: &str) -> Option<Id> {
+    id.parse().ok()
 }
 
 /// Flattens the snapshot into list rows, honoring collapsed guilds.
@@ -150,10 +263,11 @@ fn render() {
     APP.with_borrow(|app| {
         let mut rows = Vec::new();
         for guild in &app.snapshot.guilds {
+            let guild_id: slint::SharedString = guild.id.to_string().into();
             let expanded = !app.collapsed.contains(&guild.id);
             rows.push(Row {
                 kind: RowKind::Guild,
-                id: guild.id.to_string().into(),
+                id: guild_id.clone(),
                 label: guild.name.as_str().into(),
                 expanded,
                 ..Default::default()
@@ -166,21 +280,44 @@ fn render() {
                     kind: RowKind::Channel,
                     id: channel.id.to_string().into(),
                     label: channel.name.as_str().into(),
+                    guild_id: guild_id.clone(),
                     count: channel.participants.len() as i32,
                     limit: channel.user_limit as i32,
                     ..Default::default()
                 });
+                if channel.participants.is_empty() {
+                    continue;
+                }
+
+                // Every participant of a channel can be moved to the same channels.
+                let targets: Vec<Target> = guild
+                    .channels
+                    .iter()
+                    .filter(|target| target.can_connect && target.id != channel.id)
+                    .map(|target| Target { id: target.id.to_string().into(), name: target.name.as_str().into() })
+                    .collect();
+                let targets = ModelRc::new(VecModel::from(targets));
+
                 for participant in &channel.participants {
+                    let audio = app.settings.user(participant.user_id);
                     rows.push(Row {
                         kind: RowKind::Participant,
                         id: participant.user_id.to_string().into(),
                         label: participant.name.as_str().into(),
+                        guild_id: guild_id.clone(),
                         initial: initial(&participant.name).into(),
                         self_mute: participant.self_mute,
                         self_deaf: participant.self_deaf,
                         server_mute: participant.server_mute,
                         server_deaf: participant.server_deaf,
                         live: participant.streaming,
+                        is_me: participant.is_me,
+                        local_mute: audio.muted && !participant.is_me,
+                        volume: i32::from(audio.volume),
+                        can_mute: participant.moderation.mute,
+                        can_deafen: participant.moderation.deafen,
+                        can_move: participant.moderation.move_,
+                        targets: targets.clone(),
                         ..Default::default()
                     });
                 }

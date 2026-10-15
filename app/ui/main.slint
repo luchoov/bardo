@@ -1,11 +1,18 @@
-import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Button, LineEdit, ListView, Slider } from "std-widgets.slint";
 
 export enum RowKind { guild, channel, participant }
+
+// A voice channel someone can be moved to.
+export struct Target {
+    id: string,
+    name: string,
+}
 
 export struct Row {
     kind: RowKind,
     id: string,
     label: string,
+    guild-id: string,
     // Guild rows.
     expanded: bool,
     // Channel rows.
@@ -18,11 +25,22 @@ export struct Row {
     server-mute: bool,
     server-deaf: bool,
     live: bool,
+    is-me: bool,
+    // Local playback settings.
+    local-mute: bool,
+    volume: int,
+    // Moderation actions allowed on this participant.
+    can-mute: bool,
+    can-deafen: bool,
+    can-move: bool,
+    targets: [Target],
 }
 
 global Theme {
     out property <color> background: #16171a;
     out property <color> hover: #24262b;
+    out property <color> card: #202227;
+    out property <color> scrim: #000000a0;
     out property <color> text: #e6e7ea;
     out property <color> muted-text: #8b9099;
     out property <color> danger: #e5484d;
@@ -108,9 +126,51 @@ component ChannelRow inherits Rectangle {
 
 component ParticipantRow inherits Rectangle {
     in property <Row> item;
+    callback server-mute(bool);
+    callback server-deafen(bool);
+    callback move-to(string);
+    callback disconnect();
+    callback local-mute(bool);
+    callback edit-volume();
 
     background: touch.has-hover ? Theme.hover : transparent;
     touch := TouchArea { }
+    ContextMenuArea {
+        enabled: !root.item.is-me || root.item.can-mute || root.item.can-deafen || root.item.can-move;
+        Menu {
+            if !root.item.is-me: MenuItem {
+                title: "Volume (" + root.item.volume + " %)…";
+                activated => { root.edit-volume(); }
+            }
+            if !root.item.is-me: MenuItem {
+                title: "Mute locally";
+                checked: root.item.local-mute;
+                activated => { root.local-mute(!root.item.local-mute); }
+            }
+            MenuSeparator { }
+            if root.item.can-mute: MenuItem {
+                title: "Server mute";
+                checked: root.item.server-mute;
+                activated => { root.server-mute(!root.item.server-mute); }
+            }
+            if root.item.can-deafen: MenuItem {
+                title: "Server deafen";
+                checked: root.item.server-deaf;
+                activated => { root.server-deafen(!root.item.server-deaf); }
+            }
+            if root.item.can-move && root.item.targets.length > 0: Menu {
+                title: "Move to";
+                for target in root.item.targets: MenuItem {
+                    title: target.name;
+                    activated => { root.move-to(target.id); }
+                }
+            }
+            if root.item.can-move: MenuItem {
+                title: "Disconnect";
+                activated => { root.disconnect(); }
+            }
+        }
+    }
     HorizontalLayout {
         padding-left: 44px;
         padding-right: 10px;
@@ -134,10 +194,16 @@ component ParticipantRow inherits Rectangle {
         }
         Text {
             text: root.item.label;
-            color: Theme.text;
+            color: root.item.local-mute ? Theme.muted-text : Theme.text;
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
+        }
+        if !root.item.is-me && !root.item.local-mute && root.item.volume != 100: Text {
+            text: root.item.volume + "%";
+            color: Theme.muted-text;
+            font-size: 10px;
+            vertical-alignment: center;
         }
         if root.item.live: VerticalLayout {
             alignment: center;
@@ -154,6 +220,11 @@ component ParticipantRow inherits Rectangle {
                 }
             }
         }
+        if root.item.local-mute: Icon {
+            width: 16px;
+            text: Glyph.speaker-off;
+            color: Theme.warn;
+        }
         if root.item.self-mute || root.item.server-mute: Icon {
             width: 16px;
             text: Glyph.mic-off;
@@ -163,6 +234,74 @@ component ParticipantRow inherits Rectangle {
             width: 16px;
             text: Glyph.speaker-off;
             color: root.item.server-deaf ? Theme.danger : Theme.muted-text;
+        }
+    }
+}
+
+// Bottom sheet with a slider for one participant's local volume.
+component VolumeSheet inherits Rectangle {
+    in property <string> name;
+    in-out property <float> value;
+    callback changed(int);
+    callback close();
+
+    background: Theme.scrim;
+    TouchArea {
+        clicked => { root.close(); }
+    }
+    Rectangle {
+        x: 12px;
+        width: parent.width - 24px;
+        height: layout.preferred-height;
+        y: parent.height - self.height - 12px;
+        background: Theme.card;
+        border-radius: 8px;
+        // Keeps clicks on the card from closing the sheet.
+        TouchArea { }
+        layout := VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.name;
+                    color: Theme.text;
+                    font-weight: 600;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: round(root.value) + " %";
+                    color: Theme.muted-text;
+                }
+            }
+            Slider {
+                minimum: 0;
+                maximum: 200;
+                step: 5;
+                value <=> root.value;
+                // Clicking the track lands anywhere; snap to the step like the keyboard does.
+                changed(value) => {
+                    root.value = round(value / 5) * 5;
+                    root.changed(root.value);
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button {
+                    text: "Reset";
+                    clicked => {
+                        root.value = 100;
+                        root.changed(100);
+                    }
+                }
+                Button {
+                    text: "Done";
+                    primary: true;
+                    clicked => { root.close(); }
+                }
+            }
         }
     }
 }
@@ -214,9 +353,24 @@ export component MainWindow inherits Window {
     in property <string> status;
     in property <bool> connected;
     in property <string> login-error;
+    // A transient error shown under the header.
+    in property <string> notice;
+    // The participant whose volume is being edited; empty when the sheet is closed.
+    in property <string> volume-user;
+    in property <string> volume-name;
+    in-out property <float> volume-value;
     callback sign-in(string);
     callback sign-out();
     callback toggle-guild(string);
+    callback dismiss-notice();
+    callback set-server-mute(string, string, bool);
+    callback set-server-deafen(string, string, bool);
+    callback move-member(string, string, string);
+    callback disconnect-member(string, string);
+    callback set-local-mute(string, bool);
+    callback edit-volume(string, string);
+    callback set-volume(string, int);
+    callback close-volume();
 
     title: "bardo";
     preferred-width: 340px;
@@ -260,6 +414,21 @@ export component MainWindow inherits Window {
             height: 1px;
             background: Theme.hover;
         }
+        if root.notice != "": Rectangle {
+            background: Theme.card;
+            TouchArea {
+                clicked => { root.dismiss-notice(); }
+            }
+            HorizontalLayout {
+                padding: 8px;
+                padding-left: 14px;
+                Text {
+                    text: root.notice;
+                    color: Theme.danger;
+                    wrap: word-wrap;
+                }
+            }
+        }
         if root.connected && root.rows.length == 0: Text {
             text: "No voice channels";
             color: Theme.muted-text;
@@ -286,8 +455,23 @@ export component MainWindow inherits Window {
                     width: parent.width;
                     height: parent.height;
                     item: row;
+                    server-mute(on) => { root.set-server-mute(row.guild-id, row.id, on); }
+                    server-deafen(on) => { root.set-server-deafen(row.guild-id, row.id, on); }
+                    move-to(channel) => { root.move-member(row.guild-id, row.id, channel); }
+                    disconnect => { root.disconnect-member(row.guild-id, row.id); }
+                    local-mute(on) => { root.set-local-mute(row.id, on); }
+                    edit-volume => { root.edit-volume(row.id, row.label); }
                 }
             }
         }
+    }
+
+    if root.screen == 1 && root.volume-user != "": VolumeSheet {
+        width: parent.width;
+        height: parent.height;
+        name: root.volume-name;
+        value <=> root.volume-value;
+        changed(volume) => { root.set-volume(root.volume-user, volume); }
+        close => { root.close-volume(); }
     }
 }
