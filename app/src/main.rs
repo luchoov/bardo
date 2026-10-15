@@ -7,8 +7,10 @@ mod token;
 
 use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Duration};
 
-use bardo_core::{Client, ClientEvent, Command, ConnectionState, Id, MemberChange, Snapshot};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use bardo_core::{
+    Client, ClientEvent, Command, ConnectionState, Id, MemberChange, Snapshot, UserAudio, VoiceStatus,
+};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
@@ -28,6 +30,8 @@ struct App {
     /// Bumped on every connect and sign-out so events from a previous client are ignored.
     generation: u64,
     snapshot: Arc<Snapshot>,
+    /// Users heard speaking in our voice channel.
+    speaking: HashSet<Id>,
     settings: Settings,
     collapsed: HashSet<Id>,
     rows: Rc<VecModel<Row>>,
@@ -122,6 +126,27 @@ fn main() -> Result<(), slint::PlatformError> {
         update_user_audio(&user, |audio| audio.volume = volume);
     });
 
+    window.on_join_channel(|guild, channel| {
+        if let (Some(guild_id), Some(channel_id)) = (parse_id(&guild), parse_id(&channel)) {
+            send(Command::JoinVoice { guild_id, channel_id });
+        }
+    });
+    window.on_leave_voice(|| send(Command::LeaveVoice));
+    window.on_toggle_mute(|| {
+        let Some(voice) = APP.with_borrow(|app| app.snapshot.voice.clone()) else { return };
+        // Like the official client: unmuting while deafened also undeafens.
+        if voice.self_deaf {
+            send(Command::SetSelfDeaf(false));
+            send(Command::SetSelfMute(false));
+        } else {
+            send(Command::SetSelfMute(!voice.self_mute));
+        }
+    });
+    window.on_toggle_deafen(|| {
+        let Some(voice) = APP.with_borrow(|app| app.snapshot.voice.clone()) else { return };
+        send(Command::SetSelfDeaf(!voice.self_deaf));
+    });
+
     window.on_close_volume({
         let weak = window.as_weak();
         move || {
@@ -136,8 +161,12 @@ fn main() -> Result<(), slint::PlatformError> {
         window.set_screen(SCREEN_MAIN);
         window.set_connected(true);
         window.set_status("Demo".into());
-        APP.with_borrow_mut(|app| app.snapshot = Arc::new(demo::snapshot()));
+        APP.with_borrow_mut(|app| {
+            app.snapshot = Arc::new(demo::snapshot());
+            app.speaking = demo::speaking();
+        });
         render();
+        render_voice_bar(&window);
         return window.run();
     }
 
@@ -170,7 +199,12 @@ fn connect(window: &MainWindow, token: String) {
             }
         });
     });
-    APP.with_borrow_mut(|app| app.client = Some(client));
+    APP.with_borrow_mut(|app| {
+        for (&user_id, &audio) in &app.settings.users {
+            client.send(Command::SetUserAudio { user_id, audio: user_audio(audio) });
+        }
+        app.client = Some(client);
+    });
 }
 
 fn disconnect(window: &MainWindow, error: &str) {
@@ -178,9 +212,11 @@ fn disconnect(window: &MainWindow, error: &str) {
         app.client = None;
         app.generation += 1;
         app.snapshot = Arc::default();
+        app.speaking.clear();
         app.collapsed.clear();
     });
     render();
+    render_voice_bar(window);
     window.set_volume_user("".into());
     window.set_login_error(error.into());
     window.set_screen(SCREEN_LOGIN);
@@ -204,15 +240,25 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
             window.set_status(status.into());
         }
         ClientEvent::Snapshot(snapshot) => {
-            APP.with_borrow_mut(|app| app.snapshot = snapshot);
+            APP.with_borrow_mut(|app| {
+                if snapshot.voice.is_none() {
+                    app.speaking.clear();
+                }
+                app.snapshot = snapshot;
+            });
             render();
+            render_voice_bar(window);
+        }
+        ClientEvent::Speaking(users) => {
+            APP.with_borrow_mut(|app| app.speaking = users.into_iter().collect());
+            update_speaking();
         }
         ClientEvent::TokenRefreshed(token) => {
             if let Err(e) = token::save(&token) {
                 warn!("failed to store refreshed token: {e}");
             }
         }
-        ClientEvent::CommandFailed(message) => show_notice(window, message),
+        ClientEvent::Notice(message) => show_notice(window, message),
     }
 }
 
@@ -247,11 +293,17 @@ fn modify_member(guild: &str, user: &str, change: MemberChange) {
 
 fn update_user_audio(user: &str, update: impl FnOnce(&mut settings::UserAudio)) {
     let Some(user_id) = parse_id(user) else { return };
-    APP.with_borrow_mut(|app| {
+    let audio = APP.with_borrow_mut(|app| {
         app.settings.update_user(user_id, update);
         app.settings.save();
+        app.settings.user(user_id)
     });
+    send(Command::SetUserAudio { user_id, audio: user_audio(audio) });
     render();
+}
+
+fn user_audio(audio: settings::UserAudio) -> UserAudio {
+    UserAudio { volume: audio.volume, muted: audio.muted }
 }
 
 fn parse_id(id: &str) -> Option<Id> {
@@ -276,6 +328,7 @@ fn render() {
                 continue;
             }
             for channel in &guild.channels {
+                let current = app.snapshot.voice.as_ref().is_some_and(|voice| voice.channel_id == channel.id);
                 rows.push(Row {
                     kind: RowKind::Channel,
                     id: channel.id.to_string().into(),
@@ -283,6 +336,8 @@ fn render() {
                     guild_id: guild_id.clone(),
                     count: channel.participants.len() as i32,
                     limit: channel.user_limit as i32,
+                    can_connect: channel.can_connect,
+                    current,
                     ..Default::default()
                 });
                 if channel.participants.is_empty() {
@@ -311,6 +366,7 @@ fn render() {
                         server_mute: participant.server_mute,
                         server_deaf: participant.server_deaf,
                         live: participant.streaming,
+                        speaking: current && app.speaking.contains(&participant.user_id),
                         is_me: participant.is_me,
                         local_mute: audio.muted && !participant.is_me,
                         volume: i32::from(audio.volume),
@@ -325,6 +381,43 @@ fn render() {
         }
         app.rows.set_vec(rows);
     });
+}
+
+/// Refreshes only the speaking flags, which change several times a second.
+fn update_speaking() {
+    APP.with_borrow(|app| {
+        for index in 0..app.rows.row_count() {
+            let Some(mut row) = app.rows.row_data(index) else { continue };
+            if row.kind != RowKind::Participant {
+                continue;
+            }
+            let speaking = parse_id(&row.id).is_some_and(|id| app.speaking.contains(&id));
+            if row.speaking != speaking {
+                row.speaking = speaking;
+                app.rows.set_row_data(index, row);
+            }
+        }
+    });
+}
+
+fn render_voice_bar(window: &MainWindow) {
+    let bar = APP.with_borrow(|app| match &app.snapshot.voice {
+        Some(voice) => VoiceBar {
+            active: true,
+            connected: voice.status == VoiceStatus::Connected,
+            status: match voice.status {
+                VoiceStatus::Connected => "Voice connected",
+                VoiceStatus::Connecting | VoiceStatus::Disconnected => "Connecting…",
+            }
+            .into(),
+            channel: voice.channel_name.as_str().into(),
+            guild: voice.guild_name.as_str().into(),
+            muted: voice.self_mute,
+            deafened: voice.self_deaf,
+        },
+        None => VoiceBar::default(),
+    });
+    window.set_voice(bar);
 }
 
 fn initial(name: &str) -> String {

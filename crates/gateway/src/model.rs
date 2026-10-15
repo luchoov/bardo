@@ -280,7 +280,7 @@ pub struct AuthTokenUpdate {
 }
 
 /// Op 4: join, move between or leave voice channels (`channel_id: None` leaves).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UpdateVoiceState {
     pub guild_id: Option<Id>,
     pub channel_id: Option<Id>,

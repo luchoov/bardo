@@ -11,8 +11,8 @@ out of the way of your game's frame time and memory.
 - Server mute, deafen, move and disconnect from a right-click menu, for server admins.
 - Runs alongside the official client: keep Discord closed while you play, or use it for text.
 
-> **Status:** early development. The live server and voice channel list and the moderation menu work;
-> joining voice is not implemented yet.
+> **Status:** early development. The live server and voice channel list and the moderation menu work.
+> Joining voice channels and listening is implemented but not yet verified against Discord.
 
 > **Disclaimer:** bardo is not affiliated with or endorsed by Discord. Using a user account from an
 > unofficial client is against Discord's Terms of Service and may get the account banned. Use at your own risk.
@@ -44,7 +44,7 @@ No echo cancellation: headphones are assumed.
 | Main gateway | Custom (`tokio-tungstenite`, `zlib-stream`); user-account identify, not bot |
 | Client identity | Discord web client on Chrome/Windows; Chrome version and build number fetched at startup |
 | Voice (voice WS, UDP/RTP, encryption, DAVE, Opus) | `songbird` 0.6, `driver` + `receive` only (DAVE via `davey`) |
-| Audio I/O | WASAPI |
+| Audio I/O | WASAPI, through `cpal` |
 | DSP | `nnnoiseless` (RNNoise), custom VAD |
 
 DAVE (voice E2EE) has been mandatory for every call since March 1, 2026.
@@ -68,7 +68,8 @@ Threads: a tokio runtime for networking, dedicated real-time threads for audio, 
 1. Gateway: servers and voice channels with who is in each, live. *(done)*
 2. Moderation: context menu (mute/deafen/move/disconnect). Useful without audio. *(done; local volume and
    mute are stored and take effect once audio lands)*
-3. Voice — receive: join and listen (validates DAVE).
+3. Voice — receive: join and listen (validates DAVE). *(implemented: click a channel to join; needs a live
+   test)*
 4. Voice — send: microphone, PTT, VAD.
 5. DM / group calls.
 6. Polish: RNNoise, per-user volume, hotkeys, tray.
@@ -80,6 +81,7 @@ Requirements: Rust stable (MSVC), Visual Studio Build Tools with C++ and the Win
 ```
 cargo run -p bardo
 cargo test --workspace
+cargo run -p bardo-audio --example tone   # plays a short tone to check audio output
 ```
 
 ## Signing in
@@ -96,7 +98,7 @@ The token grants full access to the account: never share it or commit it.
 |---|---|
 | `BARDO_TOKEN` | Use this token instead of the stored one. |
 | `BARDO_DUMP_DIR` | Write raw `READY`, `READY_SUPPLEMENTAL` and unparseable dispatches to this directory. They contain account data: keep the directory outside the repo. |
-| `RUST_LOG` | Log filter, e.g. `info,bardo_gateway=debug`. Debug builds log to the console. |
+| `RUST_LOG` | Log filter, e.g. `info,bardo_gateway=debug`. Debug builds log to the console. `songbird=debug` shows the voice handshake. |
 | `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account. |
 
 Per-user volume and local mutes are stored in `%APPDATA%\bardo\settings.json`.

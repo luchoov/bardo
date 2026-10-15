@@ -8,6 +8,17 @@ export struct Target {
     name: string,
 }
 
+// Our own voice connection, shown in the bar at the bottom.
+export struct VoiceBar {
+    active: bool,
+    connected: bool,
+    status: string,
+    channel: string,
+    guild: string,
+    muted: bool,
+    deafened: bool,
+}
+
 export struct Row {
     kind: RowKind,
     id: string,
@@ -18,6 +29,9 @@ export struct Row {
     // Channel rows.
     count: int,
     limit: int,
+    can-connect: bool,
+    // We are in (or joining) this channel.
+    current: bool,
     // Participant rows.
     initial: string,
     self-mute: bool,
@@ -25,6 +39,7 @@ export struct Row {
     server-mute: bool,
     server-deaf: bool,
     live: bool,
+    speaking: bool,
     is-me: bool,
     // Local playback settings.
     local-mute: bool,
@@ -48,6 +63,7 @@ global Theme {
     out property <color> warn: #d29922;
     out property <color> live: #e5484d;
     out property <color> avatar: #3a3e46;
+    out property <color> speaking: #3fb950;
     out property <string> icon-font: "Segoe Fluent Icons";
 }
 
@@ -57,7 +73,10 @@ global Glyph {
     out property <string> chevron-right: "\u{E76C}";
     out property <string> speaker: "\u{E767}";
     out property <string> speaker-off: "\u{E74F}";
+    out property <string> mic: "\u{E720}";
     out property <string> mic-off: "\u{EC54}";
+    out property <string> headphones: "\u{E7F6}";
+    out property <string> hang-up: "\u{E778}";
 }
 
 component Icon inherits Text {
@@ -66,6 +85,23 @@ component Icon inherits Text {
     color: Theme.muted-text;
     vertical-alignment: center;
     horizontal-alignment: center;
+}
+
+// Headphones with a slash across them: deafened.
+component DeafIcon inherits Rectangle {
+    in property <color> tint: Theme.muted-text;
+    width: 16px;
+    Icon {
+        text: Glyph.headphones;
+        color: root.tint;
+    }
+    Path {
+        width: 12px;
+        height: 12px;
+        commands: "M 0 0 L 12 12";
+        stroke: root.tint;
+        stroke-width: 1.5px;
+    }
 }
 
 component GuildRow inherits Rectangle {
@@ -97,9 +133,17 @@ component GuildRow inherits Rectangle {
 
 component ChannelRow inherits Rectangle {
     in property <Row> item;
+    callback join();
 
-    background: touch.has-hover ? Theme.hover : transparent;
-    touch := TouchArea { }
+    background: touch.has-hover && root.item.can-connect ? Theme.hover : transparent;
+    touch := TouchArea {
+        mouse-cursor: root.item.can-connect && !root.item.current ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if root.item.can-connect && !root.item.current {
+                root.join();
+            }
+        }
+    }
     HorizontalLayout {
         padding-left: 22px;
         padding-right: 10px;
@@ -107,10 +151,12 @@ component ChannelRow inherits Rectangle {
         Icon {
             width: 16px;
             text: Glyph.speaker;
+            color: root.item.current ? Theme.ok : Theme.muted-text;
         }
         Text {
             text: root.item.label;
-            color: root.item.count > 0 ? Theme.text : Theme.muted-text;
+            color: root.item.current ? Theme.ok : root.item.count > 0 ? Theme.text : Theme.muted-text;
+            font-weight: root.item.current ? 600 : 400;
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
@@ -182,6 +228,8 @@ component ParticipantRow inherits Rectangle {
                 height: 20px;
                 border-radius: 10px;
                 background: Theme.avatar;
+                border-width: root.item.speaking ? 2px : 0px;
+                border-color: Theme.speaking;
                 Text {
                     text: root.item.initial;
                     color: Theme.text;
@@ -230,10 +278,8 @@ component ParticipantRow inherits Rectangle {
             text: Glyph.mic-off;
             color: root.item.server-mute ? Theme.danger : Theme.muted-text;
         }
-        if root.item.self-deaf || root.item.server-deaf: Icon {
-            width: 16px;
-            text: Glyph.speaker-off;
-            color: root.item.server-deaf ? Theme.danger : Theme.muted-text;
+        if root.item.self-deaf || root.item.server-deaf: DeafIcon {
+            tint: root.item.server-deaf ? Theme.danger : Theme.muted-text;
         }
     }
 }
@@ -306,6 +352,80 @@ component VolumeSheet inherits Rectangle {
     }
 }
 
+component IconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> active;
+    in property <bool> slashed;
+    in property <color> active-color: Theme.danger;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: touch.pressed ? Theme.background : touch.has-hover ? Theme.hover : transparent;
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        font-size: 16px;
+        text: root.glyph;
+        color: root.active ? root.active-color : Theme.text;
+    }
+    if root.slashed: Path {
+        width: 14px;
+        height: 14px;
+        commands: "M 0 0 L 14 14";
+        stroke: root.active-color;
+        stroke-width: 1.5px;
+    }
+}
+
+component VoiceBarView inherits Rectangle {
+    in property <VoiceBar> voice;
+    callback toggle-mute();
+    callback toggle-deafen();
+    callback leave();
+
+    background: Theme.card;
+    HorizontalLayout {
+        padding: 8px;
+        padding-left: 14px;
+        spacing: 4px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.voice.status;
+                color: root.voice.connected ? Theme.ok : Theme.warn;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.voice.channel + " / " + root.voice.guild;
+                color: Theme.muted-text;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        IconButton {
+            glyph: root.voice.muted || root.voice.deafened ? Glyph.mic-off : Glyph.mic;
+            active: root.voice.muted || root.voice.deafened;
+            clicked => { root.toggle-mute(); }
+        }
+        IconButton {
+            glyph: Glyph.headphones;
+            active: root.voice.deafened;
+            slashed: root.voice.deafened;
+            clicked => { root.toggle-deafen(); }
+        }
+        IconButton {
+            glyph: Glyph.hang-up;
+            active: true;
+            clicked => { root.leave(); }
+        }
+    }
+}
+
 component LoginView inherits Rectangle {
     in property <string> error;
     callback submit(string);
@@ -359,6 +479,7 @@ export component MainWindow inherits Window {
     in property <string> volume-user;
     in property <string> volume-name;
     in-out property <float> volume-value;
+    in property <VoiceBar> voice;
     callback sign-in(string);
     callback sign-out();
     callback toggle-guild(string);
@@ -371,6 +492,10 @@ export component MainWindow inherits Window {
     callback edit-volume(string, string);
     callback set-volume(string, int);
     callback close-volume();
+    callback join-channel(string, string);
+    callback leave-voice();
+    callback toggle-mute();
+    callback toggle-deafen();
 
     title: "bardo";
     preferred-width: 340px;
@@ -450,6 +575,7 @@ export component MainWindow inherits Window {
                     width: parent.width;
                     height: parent.height;
                     item: row;
+                    join => { root.join-channel(row.guild-id, row.id); }
                 }
                 if row.kind == RowKind.participant: ParticipantRow {
                     width: parent.width;
@@ -463,6 +589,12 @@ export component MainWindow inherits Window {
                     edit-volume => { root.edit-volume(row.id, row.label); }
                 }
             }
+        }
+        if root.voice.active: VoiceBarView {
+            voice: root.voice;
+            toggle-mute => { root.toggle-mute(); }
+            toggle-deafen => { root.toggle-deafen(); }
+            leave => { root.leave-voice(); }
         }
     }
 

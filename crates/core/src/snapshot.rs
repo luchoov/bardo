@@ -10,6 +10,27 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub guilds: Vec<GuildView>,
+    /// Our voice connection, if we are in (or joining) a channel.
+    pub voice: Option<VoiceView>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VoiceStatus {
+    #[default]
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceView {
+    pub guild_id: Id,
+    pub channel_id: Id,
+    pub guild_name: String,
+    pub channel_name: String,
+    pub status: VoiceStatus,
+    pub self_mute: bool,
+    pub self_deaf: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +105,7 @@ impl Snapshot {
                 })
             })
             .collect();
-        Self { guilds }
+        Self { guilds, voice: None }
     }
 }
 

@@ -1,10 +1,16 @@
 //! Debug builds only: `BARDO_DEMO=1` shows made-up servers instead of connecting, to work on the UI
 //! without an account.
 
-use bardo_core::{ChannelView, GuildView, Id, Moderation, Participant, Snapshot};
+use std::collections::HashSet;
+
+use bardo_core::{ChannelView, GuildView, Id, Moderation, Participant, Snapshot, VoiceStatus, VoiceView};
 
 pub fn enabled() -> bool {
     std::env::var_os("BARDO_DEMO").is_some()
+}
+
+pub fn speaking() -> HashSet<Id> {
+    HashSet::from([Id(101)])
 }
 
 pub fn snapshot() -> Snapshot {
@@ -58,5 +64,14 @@ pub fn snapshot() -> Snapshot {
                 }])],
             },
         ],
+        voice: Some(VoiceView {
+            guild_id: Id(1),
+            channel_id: Id(10),
+            guild_name: "Demo Server".to_owned(),
+            channel_name: "General".to_owned(),
+            status: VoiceStatus::Connected,
+            self_mute: true,
+            self_deaf: false,
+        }),
     }
 }

@@ -4,10 +4,15 @@ use bardo_api::{Http, MemberChange};
 use bardo_gateway::{
     CAPABILITIES, Config, ConnectionState, Event, Gateway, Id, Notification, RequestGuildMembers,
 };
+use bardo_voice::{ConnectionInfo, VoiceEvent};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-use crate::{snapshot::Snapshot, store::Store};
+use crate::{
+    snapshot::Snapshot,
+    store::Store,
+    voice::{Outcome, UserAudio, VoiceDriver, VoiceSession},
+};
 
 /// Op 8 accepts at most 100 user ids per request.
 const MEMBER_REQUEST_LIMIT: usize = 100;
@@ -16,16 +21,33 @@ const MEMBER_REQUEST_LIMIT: usize = 100;
 pub enum ClientEvent {
     State(ConnectionState),
     Snapshot(Arc<Snapshot>),
+    /// The users currently heard speaking in our voice channel, sorted.
+    Speaking(Vec<Id>),
     /// Discord rotated the token; it must be persisted in place of the old one.
     TokenRefreshed(String),
-    /// A command failed; the message is meant for the user.
-    CommandFailed(String),
+    /// Something the user should know about, such as a failed command.
+    Notice(String),
 }
 
 #[derive(Debug, Clone)]
 pub enum Command {
     /// Server mute, server deafen, move or disconnect a guild member.
     ModifyMember { guild_id: Id, user_id: Id, change: MemberChange },
+    /// Join a guild voice channel, or switch to it.
+    JoinVoice { guild_id: Id, channel_id: Id },
+    LeaveVoice,
+    SetSelfMute(bool),
+    SetSelfDeaf(bool),
+    /// How a user sounds to us.
+    SetUserAudio { user_id: Id, audio: UserAudio },
+}
+
+/// Results of background work, reported back to the client task.
+#[derive(Debug)]
+pub(crate) enum Internal {
+    Event(ClientEvent),
+    Voice(VoiceEvent),
+    VoiceConnectResult { info: ConnectionInfo, result: Result<(), String> },
 }
 
 /// A running session. Its networking lives on a dedicated thread with its own tokio runtime;
@@ -99,19 +121,19 @@ async fn run(
         capabilities: CAPABILITIES,
     });
     // Background tasks report back through this channel, so `on_event` is only called from here.
-    let (results_tx, mut results) = mpsc::unbounded_channel();
+    let (internal_tx, mut internal) = mpsc::unbounded_channel();
 
-    let mut session = Session::default();
+    let mut session = Session::new(internal_tx.clone());
     loop {
         let first = tokio::select! {
             _ = &mut shutdown => break,
-            Some(event) = results.recv() => {
-                on_event(event);
+            Some(message) = internal.recv() => {
+                session.on_internal(message, &gateway, &on_event);
                 continue;
             }
             command = commands.recv() => match command {
                 Some(command) => {
-                    session.execute(command, &http, &results_tx);
+                    session.execute(command, &gateway, &http, &internal_tx, &on_event);
                     continue;
                 }
                 None => break,
@@ -134,13 +156,13 @@ async fn run(
                     }
                     on_event(ClientEvent::TokenRefreshed(update.token));
                 }
-                Notification::Event(event) => dirty |= session.apply(event),
+                Notification::Event(event) => dirty |= session.apply(event, &gateway, &on_event),
             }
         }
 
         if dirty {
             session.request_unresolved_members(&gateway);
-            on_event(ClientEvent::Snapshot(Arc::new(Snapshot::build(&session.store))));
+            session.publish(&on_event);
         }
     }
 }
@@ -149,40 +171,123 @@ fn drain<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> impl Iterator<Item = T
     std::iter::from_fn(|| receiver.try_recv().ok())
 }
 
-#[derive(Default)]
 struct Session {
     store: Store,
+    /// Our gateway session id, from READY.
+    session_id: String,
+    voice: VoiceSession,
+    driver: VoiceDriver,
     /// READY_SUPPLEMENTAL carries the members of everyone in voice; wait for it before asking for more.
     supplemental_received: bool,
     requested_members: HashSet<(Id, Id)>,
 }
 
 impl Session {
-    fn apply(&mut self, event: Event) -> bool {
-        match &event {
-            Event::Ready(_) => {
-                self.supplemental_received = false;
-                self.requested_members.clear();
-            }
-            Event::ReadySupplemental(_) => self.supplemental_received = true,
-            _ => {}
+    fn new(internal: mpsc::UnboundedSender<Internal>) -> Self {
+        Self {
+            store: Store::default(),
+            session_id: String::new(),
+            voice: VoiceSession::default(),
+            driver: VoiceDriver::new(internal),
+            supplemental_received: false,
+            requested_members: HashSet::new(),
         }
-        self.store.apply(event)
     }
 
-    fn execute(&mut self, command: Command, http: &Arc<Http>, results: &mpsc::UnboundedSender<ClientEvent>) {
-        match command {
+    fn publish(&self, on_event: &impl Fn(ClientEvent)) {
+        let mut snapshot = Snapshot::build(&self.store);
+        snapshot.voice = self.voice.view(&self.store);
+        on_event(ClientEvent::Snapshot(Arc::new(snapshot)));
+    }
+
+    /// Carries out what the voice state machine decided, then reports the outcome to the UI.
+    /// Returns whether the snapshot must be rebuilt.
+    fn settle_voice(&mut self, outcome: Outcome, gateway: &Gateway, on_event: &impl Fn(ClientEvent)) -> bool {
+        for action in self.voice.take_actions() {
+            self.driver.perform(action, gateway);
+        }
+        match outcome {
+            Outcome::Nothing => false,
+            Outcome::Changed => true,
+            Outcome::Notice(message) => {
+                on_event(ClientEvent::Notice(message));
+                true
+            }
+        }
+    }
+
+    fn apply(&mut self, event: Event, gateway: &Gateway, on_event: &impl Fn(ClientEvent)) -> bool {
+        let me = self.store.me.as_ref().map(|user| user.id);
+        let outcome = match (&event, me) {
+            (Event::Ready(ready), _) => {
+                self.session_id = ready.session_id.clone();
+                self.supplemental_received = false;
+                self.requested_members.clear();
+                self.voice.on_new_session()
+            }
+            (Event::ReadySupplemental(_), _) => {
+                self.supplemental_received = true;
+                Outcome::Nothing
+            }
+            (Event::VoiceStateUpdate(state), Some(me)) => self.voice.on_voice_state(state, me, &self.session_id),
+            (Event::VoiceServerUpdate(update), Some(me)) => self.voice.on_voice_server(update, me),
+            _ => Outcome::Nothing,
+        };
+        let voice_changed = self.settle_voice(outcome, gateway, on_event);
+        self.store.apply(event) | voice_changed
+    }
+
+    fn on_internal(&mut self, message: Internal, gateway: &Gateway, on_event: &impl Fn(ClientEvent)) {
+        let outcome = match message {
+            Internal::Event(event) => {
+                on_event(event);
+                return;
+            }
+            Internal::Voice(VoiceEvent::Speaking(users)) => {
+                on_event(ClientEvent::Speaking(users));
+                return;
+            }
+            Internal::Voice(event) => self.voice.on_voice_event(&event),
+            Internal::VoiceConnectResult { info, result } => self.voice.on_connect_result(&info, result),
+        };
+        if self.settle_voice(outcome, gateway, on_event) {
+            self.publish(on_event);
+        }
+    }
+
+    fn execute(
+        &mut self,
+        command: Command,
+        gateway: &Gateway,
+        http: &Arc<Http>,
+        internal: &mpsc::UnboundedSender<Internal>,
+        on_event: &impl Fn(ClientEvent),
+    ) {
+        let outcome = match command {
             Command::ModifyMember { guild_id, user_id, change } => {
                 let action = self.describe_member_change(guild_id, user_id, change);
                 info!(%guild_id, %user_id, ?change, "modifying member");
-                let (http, results) = (http.clone(), results.clone());
+                let (http, internal) = (http.clone(), internal.clone());
                 tokio::spawn(async move {
                     if let Err(e) = http.modify_member(guild_id, user_id, change).await {
                         warn!(%guild_id, %user_id, ?change, "member change failed: {e}");
-                        let _ = results.send(ClientEvent::CommandFailed(format!("Couldn't {action}: {e}")));
+                        let notice = ClientEvent::Notice(format!("Couldn't {action}: {e}"));
+                        let _ = internal.send(Internal::Event(notice));
                     }
                 });
+                return;
             }
+            Command::JoinVoice { guild_id, channel_id } => self.voice.join(guild_id, channel_id),
+            Command::LeaveVoice => self.voice.leave(),
+            Command::SetSelfMute(mute) => self.voice.set_self_mute(mute),
+            Command::SetSelfDeaf(deaf) => self.voice.set_self_deaf(deaf),
+            Command::SetUserAudio { user_id, audio } => {
+                self.driver.set_user_audio(user_id, audio);
+                return;
+            }
+        };
+        if self.settle_voice(outcome, gateway, on_event) {
+            self.publish(on_event);
         }
     }
 

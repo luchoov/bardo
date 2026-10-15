@@ -6,4 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait = "0.1"
+bardo-audio = { version = "0.1.0", path = "../audio" }
+bardo-gateway = { version = "0.1.0", path = "../gateway" }
+# `gateway` is only enabled because `receive` needs its dashmap dependency.
 songbird = { version = "0.6.1", default-features = false, features = ["driver", "gateway", "receive", "rustls", "tungstenite"] }
+tracing = "0.1.44"
