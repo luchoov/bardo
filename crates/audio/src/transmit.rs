@@ -1,5 +1,5 @@
-//! Microphone processing before sending: noise suppression, level metering and the transmit gate
-//! (voice activity or push-to-talk).
+//! Microphone processing before sending: noise suppression, input gain, level metering, the
+//! transmit gate (voice activity or push-to-talk), automatic gain control and a limiter.
 
 use std::sync::{
     Arc,
@@ -18,6 +18,19 @@ pub const DEFAULT_THRESHOLD_DB: f32 = -50.0;
 /// The level reported for digital silence.
 pub const SILENCE_DB: f32 = -100.0;
 
+/// Speech level automatic gain control aims for, in dBFS RMS.
+const AGC_TARGET_DB: f32 = -20.0;
+const AGC_MAX_DB: f32 = 18.0;
+const AGC_MIN_DB: f32 = -12.0;
+/// Gain change per 20 ms frame: rises slowly (3 dB/s) and falls fast (20 dB/s), so a shout is
+/// tamed quickly but the gain does not pump up between words.
+const AGC_RISE_DB: f32 = 0.06;
+const AGC_FALL_DB: f32 = 0.4;
+/// Frames quieter than this never count as speech for automatic gain control.
+const AGC_FLOOR_DB: f32 = -60.0;
+/// The limiter leaves samples below this untouched and bends louder ones smoothly towards 1.0.
+const LIMITER_KNEE: f32 = 0.8;
+
 /// Transmit settings and live state, shared between the UI, the push-to-talk key poller and the
 /// capture thread. Everything is atomic: the capture thread never waits.
 pub struct TransmitControl {
@@ -27,6 +40,9 @@ pub struct TransmitControl {
     threshold: AtomicU32,
     muted: AtomicBool,
     noise_suppression: AtomicBool,
+    /// Linear input gain (`f32` bits).
+    input_gain: AtomicU32,
+    auto_gain: AtomicBool,
     /// Level of the last captured frame in dBFS (`f32` bits), for the input meter.
     level: AtomicU32,
     transmitting: AtomicBool,
@@ -40,6 +56,8 @@ impl Default for TransmitControl {
             threshold: AtomicU32::new(DEFAULT_THRESHOLD_DB.to_bits()),
             muted: AtomicBool::new(false),
             noise_suppression: AtomicBool::new(true),
+            input_gain: AtomicU32::new(1.0f32.to_bits()),
+            auto_gain: AtomicBool::new(true),
             level: AtomicU32::new(SILENCE_DB.to_bits()),
             transmitting: AtomicBool::new(false),
         }
@@ -79,7 +97,24 @@ impl TransmitControl {
         self.noise_suppression.load(Ordering::Relaxed)
     }
 
-    /// The input level in dBFS, after noise suppression.
+    /// Sets the linear input gain (1.0 leaves the microphone as it is).
+    pub fn set_input_gain(&self, gain: f32) {
+        self.input_gain.store(gain.max(0.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn input_gain(&self) -> f32 {
+        f32::from_bits(self.input_gain.load(Ordering::Relaxed))
+    }
+
+    pub fn set_auto_gain(&self, enabled: bool) {
+        self.auto_gain.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn auto_gain(&self) -> bool {
+        self.auto_gain.load(Ordering::Relaxed)
+    }
+
+    /// The input level in dBFS, after noise suppression and input gain.
     pub fn level_db(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
@@ -96,11 +131,18 @@ pub struct Transmitter {
     denoiser: Box<DenoiseState<'static>>,
     scratch: [f32; DenoiseState::FRAME_SIZE],
     gate: Gate,
+    auto_gain: AutoGain,
 }
 
 impl Transmitter {
     pub fn new(control: Arc<TransmitControl>) -> Self {
-        Self { control, denoiser: DenoiseState::new(), scratch: [0.0; DenoiseState::FRAME_SIZE], gate: Gate::default() }
+        Self {
+            control,
+            denoiser: DenoiseState::new(),
+            scratch: [0.0; DenoiseState::FRAME_SIZE],
+            gate: Gate::default(),
+            auto_gain: AutoGain::default(),
+        }
     }
 
     /// Processes one 20 ms mono frame in place. Returns whether it should be sent.
@@ -110,6 +152,12 @@ impl Transmitter {
             self.denoise(frame);
         }
         let control = &self.control;
+        let gain = control.input_gain();
+        if gain != 1.0 {
+            frame.iter_mut().for_each(|sample| *sample *= gain);
+        }
+        // The meter and voice activity see the level before automatic gain, so the threshold
+        // keeps meaning the same thing while the automatic gain moves.
         let level = level_db(frame);
         control.level.store(level.to_bits(), Ordering::Relaxed);
 
@@ -121,6 +169,11 @@ impl Transmitter {
             self.gate.update(level >= control.threshold_db(), VAD_HANGOVER)
         };
         control.transmitting.store(open, Ordering::Relaxed);
+
+        if control.auto_gain() {
+            self.auto_gain.process(frame, level, open && level >= AGC_FLOOR_DB);
+        }
+        limit(frame);
         open
     }
 
@@ -142,6 +195,38 @@ impl Transmitter {
 pub fn level_db(frame: &[f32]) -> f32 {
     let rms = rms_f32(frame);
     if rms <= 1e-5 { SILENCE_DB } else { 20.0 * rms.log10() }
+}
+
+/// Slowly steers the speech level towards [`AGC_TARGET_DB`]. It only learns from frames that are
+/// being sent and loud enough to be speech, so background noise is never pumped up.
+#[derive(Default)]
+struct AutoGain {
+    gain_db: f32,
+}
+
+impl AutoGain {
+    fn process(&mut self, frame: &mut [f32], level: f32, speech: bool) {
+        if speech {
+            let error = AGC_TARGET_DB - (level + self.gain_db);
+            self.gain_db = (self.gain_db + error.clamp(-AGC_FALL_DB, AGC_RISE_DB)).clamp(AGC_MIN_DB, AGC_MAX_DB);
+        }
+        if self.gain_db != 0.0 {
+            let gain = 10f32.powf(self.gain_db / 20.0);
+            frame.iter_mut().for_each(|sample| *sample *= gain);
+        }
+    }
+}
+
+/// Soft-clips samples above [`LIMITER_KNEE`] so extra gain never wraps or hard-clips.
+fn limit(frame: &mut [f32]) {
+    const RANGE: f32 = 1.0 - LIMITER_KNEE;
+    for sample in frame {
+        let magnitude = sample.abs();
+        if magnitude > LIMITER_KNEE {
+            let bent = LIMITER_KNEE + RANGE * ((magnitude - LIMITER_KNEE) / RANGE).tanh();
+            *sample = bent.copysign(*sample);
+        }
+    }
 }
 
 /// Opens while its input is active and stays open for a few frames afterwards.
@@ -178,6 +263,7 @@ mod tests {
     fn transmitter() -> (Arc<TransmitControl>, Transmitter) {
         let control = Arc::new(TransmitControl::default());
         control.set_noise_suppression(false);
+        control.set_auto_gain(false);
         (control.clone(), Transmitter::new(control))
     }
 
@@ -223,6 +309,61 @@ mod tests {
         control.set_muted(true);
         assert!(!transmitter.process(&mut frame(0.5)));
         assert!(!control.transmitting());
+    }
+
+    #[test]
+    fn input_gain_scales_the_level() {
+        let (control, mut transmitter) = transmitter();
+        control.set_input_gain(2.0);
+        let mut samples = frame(0.1);
+        transmitter.process(&mut samples);
+        assert!((samples[0] - 0.2).abs() < 1e-6);
+        assert!((control.level_db() - -13.98).abs() < 0.1);
+    }
+
+    #[test]
+    fn the_limiter_keeps_samples_in_range() {
+        let (control, mut transmitter) = transmitter();
+        control.set_input_gain(10.0);
+        let mut samples = frame(0.5);
+        transmitter.process(&mut samples);
+        assert!(samples.iter().all(|s| s.abs() <= 1.0));
+        assert!(samples[0] > 0.95);
+
+        let mut quiet = frame(0.5);
+        limit(&mut quiet);
+        assert_eq!(quiet[0], 0.5);
+    }
+
+    #[test]
+    fn auto_gain_raises_quiet_speech_but_not_silence() {
+        let (control, mut transmitter) = transmitter();
+        control.set_auto_gain(true);
+        control.set_threshold_db(-50.0);
+        // Five seconds of quiet speech at -40 dBFS.
+        for _ in 0..250 {
+            transmitter.process(&mut frame(0.01));
+        }
+        let mut samples = frame(0.01);
+        transmitter.process(&mut samples);
+        let boosted = level_db(&samples);
+        assert!(boosted > -30.0, "speech should be louder, got {boosted} dB");
+        // Silence does not move the gain.
+        let before = transmitter.auto_gain.gain_db;
+        for _ in 0..100 {
+            transmitter.process(&mut frame(0.0));
+        }
+        assert_eq!(transmitter.auto_gain.gain_db, before);
+    }
+
+    #[test]
+    fn auto_gain_tames_loud_speech_quickly() {
+        let (control, mut transmitter) = transmitter();
+        control.set_auto_gain(true);
+        for _ in 0..25 {
+            transmitter.process(&mut frame(0.9));
+        }
+        assert!(transmitter.auto_gain.gain_db < -5.0);
     }
 
     #[test]

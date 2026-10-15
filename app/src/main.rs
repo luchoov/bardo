@@ -177,6 +177,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 app.inputs = bardo_core::input_devices();
                 app.outputs = bardo_core::output_devices();
                 window.set_threshold(app.settings.voice.threshold_db);
+                window.set_input_volume(f32::from(app.settings.voice.input_volume));
             });
             render_settings(&window);
             window.set_settings_open(true);
@@ -220,6 +221,11 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     window.on_set_threshold(|threshold| update_voice_settings(|voice, _| voice.threshold_db = threshold));
     window.on_set_noise_suppression(|enabled| update_voice_settings(|voice, _| voice.noise_suppression = enabled));
+    window.on_set_input_volume(|volume| {
+        let volume = volume.round().clamp(0.0, f32::from(settings::MAX_INPUT_VOLUME)) as u16;
+        update_voice_settings(|voice, _| voice.input_volume = volume);
+    });
+    window.on_set_auto_gain(|enabled| update_voice_settings(|voice, _| voice.auto_gain = enabled));
     window.on_capture_key({
         let weak = window.as_weak();
         move || {
@@ -426,6 +432,8 @@ fn apply_voice_settings(transmit: &TransmitControl, voice: &VoiceSettings) {
     transmit.set_push_to_talk(voice.push_to_talk);
     transmit.set_threshold_db(voice.threshold_db);
     transmit.set_noise_suppression(voice.noise_suppression);
+    transmit.set_input_gain(voice.input_gain());
+    transmit.set_auto_gain(voice.auto_gain);
 }
 
 fn audio_devices(voice: &VoiceSettings) -> AudioDevices {
@@ -466,6 +474,7 @@ fn render_settings(window: &MainWindow) {
             key_name: voice.push_to_talk_key.map(hotkey::key_name).unwrap_or_default().into(),
             capturing_key: app.capturing_key,
             noise_suppression: voice.noise_suppression,
+            auto_gain: voice.auto_gain,
         }
     });
     window.set_voice_settings(view);

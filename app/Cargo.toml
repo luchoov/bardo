@@ -20,3 +20,4 @@ windows-sys = { version = "0.61.2", features = ["Win32_UI_Input_KeyboardAndMouse
 
 [build-dependencies]
 slint-build = "1.18.1"
+winresource = "0.1.34"

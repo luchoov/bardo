@@ -90,6 +90,7 @@ export struct VoiceSettingsView {
     key-name: string,
     capturing-key: bool,
     noise-suppression: bool,
+    auto-gain: bool,
 }
 
 component Icon inherits Text {
@@ -395,20 +396,8 @@ component IconButton inherits Rectangle {
 
 component VoiceBarView inherits Rectangle {
     in property <VoiceBar> voice;
-    in property <bool> settings-open;
-    in property <VoiceSettingsView> voice-settings;
-    in-out property <float> threshold;
-    in property <float> input-level;
     callback toggle-mute();
     callback toggle-deafen();
-    callback open-settings();
-    callback close-settings();
-    callback select-input(int);
-    callback select-output(int);
-    callback set-push-to-talk(bool);
-    callback capture-key();
-    callback set-threshold(float);
-    callback set-noise-suppression(bool);
     callback leave();
 
     background: Theme.card;
@@ -456,10 +445,12 @@ component Label inherits Text {
     font-size: 11px;
 }
 
-// Voice settings: devices, voice activity or push-to-talk, noise suppression.
+// Voice settings: devices, input volume, voice activity or push-to-talk, noise suppression.
 component SettingsSheet inherits Rectangle {
     in property <VoiceSettingsView> view;
     in-out property <float> threshold;
+    // Microphone volume in percent.
+    in-out property <float> input-volume;
     // Input level in dBFS, refreshed while the sheet is open.
     in property <float> level;
     in property <bool> in-voice;
@@ -469,6 +460,8 @@ component SettingsSheet inherits Rectangle {
     callback capture-key();
     callback set-threshold(float);
     callback set-noise-suppression(bool);
+    callback set-input-volume(float);
+    callback set-auto-gain(bool);
     callback close();
 
     background: Theme.scrim;
@@ -504,6 +497,16 @@ component SettingsSheet inherits Rectangle {
                 model: root.view.outputs;
                 current-index: root.view.output-index;
                 selected => { root.select-output(self.current-index); }
+            }
+            Label { text: "Input volume: " + round(root.input-volume) + "%"; }
+            Slider {
+                minimum: 0;
+                maximum: 200;
+                value <=> root.input-volume;
+                changed(value) => {
+                    root.input-volume = round(value);
+                    root.set-input-volume(root.input-volume);
+                }
             }
             Label { text: "Input mode"; }
             ComboBox {
@@ -563,6 +566,11 @@ component SettingsSheet inherits Rectangle {
                 text: "Noise suppression";
                 checked: root.view.noise-suppression;
                 toggled => { root.set-noise-suppression(self.checked); }
+            }
+            CheckBox {
+                text: "Automatic gain control";
+                checked: root.view.auto-gain;
+                toggled => { root.set-auto-gain(self.checked); }
             }
             HorizontalLayout {
                 alignment: end;
@@ -633,6 +641,7 @@ export component MainWindow inherits Window {
     in property <bool> settings-open;
     in property <VoiceSettingsView> voice-settings;
     in-out property <float> threshold;
+    in-out property <float> input-volume;
     in property <float> input-level;
     callback sign-in(string);
     callback sign-out();
@@ -658,8 +667,11 @@ export component MainWindow inherits Window {
     callback capture-key();
     callback set-threshold(float);
     callback set-noise-suppression(bool);
+    callback set-input-volume(float);
+    callback set-auto-gain(bool);
 
     title: "bardo";
+    icon: @image-url("../assets/icon.png");
     preferred-width: 340px;
     preferred-height: 600px;
     min-width: 260px;
@@ -769,6 +781,7 @@ export component MainWindow inherits Window {
         height: parent.height;
         view: root.voice-settings;
         threshold <=> root.threshold;
+        input-volume <=> root.input-volume;
         level: root.input-level;
         in-voice: root.voice.active;
         select-input(index) => { root.select-input(index); }
@@ -777,6 +790,8 @@ export component MainWindow inherits Window {
         capture-key => { root.capture-key(); }
         set-threshold(value) => { root.set-threshold(value); }
         set-noise-suppression(on) => { root.set-noise-suppression(on); }
+        set-input-volume(value) => { root.set-input-volume(value); }
+        set-auto-gain(on) => { root.set-auto-gain(on); }
         close => { root.close-settings(); }
     }
 

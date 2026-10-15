@@ -8,6 +8,8 @@ use tracing::warn;
 
 pub const DEFAULT_VOLUME: u16 = 100;
 pub const MAX_VOLUME: u16 = 200;
+/// Input volume range in percent, like the official client's.
+pub const MAX_INPUT_VOLUME: u16 = 200;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Settings {
@@ -30,6 +32,16 @@ pub struct VoiceSettings {
     /// Voice activity threshold in dBFS.
     pub threshold_db: f32,
     pub noise_suppression: bool,
+    /// Microphone volume in percent, 0–200.
+    pub input_volume: u16,
+    pub auto_gain: bool,
+}
+
+impl VoiceSettings {
+    /// The linear gain for [`Self::input_volume`].
+    pub fn input_gain(&self) -> f32 {
+        f32::from(self.input_volume.min(MAX_INPUT_VOLUME)) / 100.0
+    }
 }
 
 impl Default for VoiceSettings {
@@ -41,6 +53,8 @@ impl Default for VoiceSettings {
             push_to_talk_key: None,
             threshold_db: DEFAULT_THRESHOLD_DB,
             noise_suppression: true,
+            input_volume: DEFAULT_VOLUME,
+            auto_gain: true,
         }
     }
 }
@@ -134,6 +148,8 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"voice": {"push_to_talk": true}}"#).unwrap();
         assert!(settings.voice.push_to_talk);
         assert!(settings.voice.noise_suppression);
+        assert!(settings.voice.auto_gain);
+        assert_eq!(settings.voice.input_gain(), 1.0);
     }
 
     #[test]

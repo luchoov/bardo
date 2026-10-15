@@ -2,7 +2,7 @@ use cpal::{
     FromSample, SampleFormat, SizedSample, StreamConfig,
     traits::{DeviceTrait, StreamTrait},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{Error, FRAME_LEN, SAMPLE_RATE, devices, resample::Resampler};
 
@@ -66,10 +66,21 @@ where
     )
 }
 
+/// A channel this much quieter than the loudest one (power ratio, -20 dB) is left out of the
+/// downmix: some headsets put the microphone on one channel and leave the other silent, and
+/// averaging would halve the voice.
+const QUIET_CHANNEL: f32 = 0.01;
+/// Smoothing for the per-channel power estimate, per device callback.
+const POWER_SMOOTHING: f32 = 0.1;
+
 /// Turns device-format audio into 20 ms mono frames at 48 kHz.
 struct Framer {
     channels: usize,
     resampler: Resampler,
+    /// Smoothed power per channel, to find the channels that carry the voice.
+    power: Vec<f32>,
+    active: Vec<bool>,
+    interleaved: Vec<f32>,
     mono: Vec<f32>,
     resampled: Vec<f32>,
     frame: Vec<f32>,
@@ -80,6 +91,9 @@ impl Framer {
         Self {
             channels: channels.max(1),
             resampler: Resampler::new(rate, SAMPLE_RATE),
+            power: vec![0.0; channels.max(1)],
+            active: vec![true; channels.max(1)],
+            interleaved: Vec::new(),
             mono: Vec::new(),
             resampled: Vec::new(),
             frame: Vec::with_capacity(FRAME_LEN),
@@ -87,15 +101,15 @@ impl Framer {
     }
 
     fn push(&mut self, samples: impl Iterator<Item = f32>, on_frame: &mut impl FnMut(&mut [f32])) {
+        self.interleaved.clear();
+        self.interleaved.extend(samples);
+        self.update_active_channels();
+
         self.mono.clear();
-        let scale = 1.0 / self.channels as f32;
-        let mut sum = 0.0;
-        for (index, sample) in samples.enumerate() {
-            sum += sample;
-            if (index + 1) % self.channels == 0 {
-                self.mono.push(sum * scale);
-                sum = 0.0;
-            }
+        let scale = 1.0 / self.active.iter().filter(|&&active| active).count().max(1) as f32;
+        for frame in self.interleaved.chunks_exact(self.channels) {
+            let sum: f32 = frame.iter().zip(&self.active).filter(|&(_, &active)| active).map(|(&s, _)| s).sum();
+            self.mono.push(sum * scale);
         }
 
         self.resampled.clear();
@@ -106,6 +120,28 @@ impl Framer {
                 on_frame(&mut self.frame);
                 self.frame.clear();
             }
+        }
+    }
+
+    fn update_active_channels(&mut self) {
+        if self.channels == 1 {
+            return;
+        }
+        let frames = (self.interleaved.len() / self.channels).max(1) as f32;
+        for (channel, power) in self.power.iter_mut().enumerate() {
+            let block: f32 =
+                self.interleaved.iter().skip(channel).step_by(self.channels).map(|s| s * s).sum::<f32>() / frames;
+            *power += (block - *power) * POWER_SMOOTHING;
+        }
+        let loudest = self.power.iter().copied().fold(0.0, f32::max);
+        let mut changed = false;
+        for (active, &power) in self.active.iter_mut().zip(&self.power) {
+            let now = loudest <= f32::EPSILON || power >= loudest * QUIET_CHANNEL;
+            changed |= now != *active;
+            *active = now;
+        }
+        if changed {
+            debug!(active = ?self.active, "microphone channels in use changed");
         }
     }
 }
@@ -127,5 +163,15 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].len(), FRAME_LEN);
         assert!((frames[0][0] - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_silent_channel_does_not_halve_the_voice() {
+        let mut framer = Framer::new(SAMPLE_RATE, 2);
+        let mut frames: Vec<Vec<f32>> = Vec::new();
+        let left_only: Vec<f32> = [0.5, 0.0].repeat(FRAME_LEN);
+        framer.push(left_only.iter().copied(), &mut |frame: &mut [f32]| frames.push(frame.to_vec()));
+        assert_eq!(frames.len(), 1);
+        assert!((frames[0][0] - 0.5).abs() < 1e-6);
     }
 }
