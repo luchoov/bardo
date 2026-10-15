@@ -62,6 +62,10 @@ fn main() -> Result<(), slint::PlatformError> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
     token::init();
+    // Dependencies enable both rustls crypto backends, so rustls cannot pick one by itself.
+    if rustls::crypto::aws_lc_rs::default_provider().install_default().is_err() {
+        warn!("a TLS crypto provider was already installed");
+    }
 
     let window = MainWindow::new()?;
     APP.with_borrow_mut(|app| {
