@@ -13,6 +13,10 @@ pub mod channel_kind {
     pub const GUILD_STAGE_VOICE: u8 = 13;
 }
 
+pub mod relationship_kind {
+    pub const FRIEND: u8 = 1;
+}
+
 pub mod overwrite_kind {
     pub const ROLE: u8 = 0;
     pub const MEMBER: u8 = 1;
@@ -183,6 +187,20 @@ impl GatewayGuild {
     }
 }
 
+/// A friend, block or pending request. `id` is the other user's id.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Relationship {
+    pub id: Id,
+    #[serde(rename = "type")]
+    pub kind: u8,
+    /// Missing with `DEDUPE_USER_OBJECTS`; the user is then in READY's `users`.
+    #[serde(default)]
+    pub user: Option<User>,
+    /// Our private nickname for them.
+    #[serde(default)]
+    pub nickname: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Ready {
     pub user: User,
@@ -196,6 +214,8 @@ pub struct Ready {
     pub merged_members: Vec<Vec<Member>>,
     #[serde(default)]
     pub private_channels: Vec<Channel>,
+    #[serde(default)]
+    pub relationships: Vec<Relationship>,
     pub session_id: String,
     pub resume_gateway_url: String,
 }

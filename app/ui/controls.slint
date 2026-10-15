@@ -1,0 +1,703 @@
+// bardo's own controls. Nothing here uses the standard widgets, so the look is the same on every
+// Windows version and theme.
+
+import { Theme, Glyph } from "theme.slint";
+
+export component Icon inherits Text {
+    font-family: Theme.icon-font;
+    font-size: 14px;
+    color: Theme.text-2;
+    vertical-alignment: center;
+    horizontal-alignment: center;
+}
+
+// A glyph with a diagonal slash across it: muted, deafened.
+export component SlashedIcon inherits Rectangle {
+    in property <string> glyph;
+    in property <color> tint: Theme.text-2;
+    in property <length> glyph-size: 14px;
+    width: self.glyph-size + 4px;
+    Icon {
+        text: root.glyph;
+        font-size: root.glyph-size;
+        color: root.tint;
+    }
+    Path {
+        width: root.glyph-size;
+        height: root.glyph-size;
+        commands: "M 1 1 L 13 13";
+        viewbox-width: 14;
+        viewbox-height: 14;
+        stroke: root.tint;
+        stroke-width: 1.6px;
+    }
+}
+
+export component Avatar inherits Rectangle {
+    in property <string> initial;
+    in property <bool> speaking;
+    in property <length> size: 24px;
+    width: self.size;
+    height: self.size;
+    ring := Rectangle {
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: Theme.ok;
+        opacity: root.speaking ? 1 : 0;
+        animate opacity { duration: Theme.fast; }
+    }
+    Rectangle {
+        width: root.size - 6px;
+        height: root.size - 6px;
+        border-radius: self.width / 2;
+        background: Theme.avatar;
+        Text {
+            text: root.initial;
+            color: Theme.text-2;
+            font-size: root.size * 0.4;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A key cap, e.g. in "Ctrl" "K".
+export component Kbd inherits Rectangle {
+    in property <string> text;
+    height: 20px;
+    min-width: 20px;
+    border-radius: 4px;
+    background: Theme.active;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        Text {
+            text: root.text;
+            color: Theme.text-2;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Theme.danger;
+    height: 15px;
+    border-radius: 3px;
+    background: self.tint;
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        Text {
+            text: root.text;
+            color: white;
+            font-size: 9px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export enum ButtonKind { primary, secondary, ghost, danger }
+
+export component Button inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <ButtonKind> kind: ButtonKind.secondary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 6px;
+    opacity: self.enabled ? 1 : 0.45;
+    background: root.kind == ButtonKind.primary
+        ? (touch.pressed ? #c9c9cf : touch.has-hover ? #ffffff : Theme.text)
+        : root.kind == ButtonKind.danger
+            ? Theme.danger.with-alpha(touch.pressed ? 0.28 : touch.has-hover ? 0.2 : 0.12)
+            : root.kind == ButtonKind.ghost
+                ? (touch.pressed ? Theme.active : touch.has-hover ? Theme.raised : transparent)
+                : (touch.pressed ? Theme.active : touch.has-hover ? Theme.raised-hover : Theme.raised);
+    border-width: root.kind == ButtonKind.secondary ? 1px : 0px;
+    border-color: Theme.border-strong;
+    animate background { duration: Theme.fast; }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        alignment: center;
+        if root.icon != "": Icon {
+            text: root.icon;
+            font-size: 12px;
+            color: label.color;
+        }
+        label := Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            color: root.kind == ButtonKind.primary ? Theme.bg
+                : root.kind == ButtonKind.danger ? Theme.danger : Theme.text;
+        }
+    }
+}
+
+export component IconButton inherits Rectangle {
+    in property <string> glyph;
+    // Highlighted in `active-color`, e.g. muted.
+    in property <bool> active;
+    in property <color> active-color: Theme.danger;
+    in property <bool> slashed;
+    in property <length> size: 32px;
+    in property <length> glyph-size: 15px;
+    in property <bool> enabled: true;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    width: self.size;
+    height: self.size;
+    border-radius: 6px;
+    opacity: self.enabled ? 1 : 0.4;
+    background: touch.pressed ? Theme.active
+        : touch.has-hover ? Theme.raised
+        : root.active ? root.active-color.with-alpha(0.12) : transparent;
+    animate background { duration: Theme.fast; }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    if !root.slashed: Icon {
+        text: root.glyph;
+        font-size: root.glyph-size;
+        color: root.active ? root.active-color : touch.has-hover ? Theme.text : Theme.text-2;
+    }
+    if root.slashed: SlashedIcon {
+        glyph: root.glyph;
+        glyph-size: root.glyph-size;
+        tint: root.active ? root.active-color : Theme.text-2;
+    }
+}
+
+export component Toggle inherits Rectangle {
+    in property <bool> checked;
+    // Display only, e.g. inside a menu item that handles the click.
+    in property <bool> interactive: true;
+    callback toggled(bool);
+
+    width: 30px;
+    height: 18px;
+    border-radius: 9px;
+    background: self.checked ? Theme.text : Theme.track;
+    animate background { duration: Theme.medium; }
+    Rectangle {
+        width: 14px;
+        height: 14px;
+        y: 2px;
+        x: root.checked ? root.width - self.width - 2px : 2px;
+        border-radius: 7px;
+        background: root.checked ? Theme.bg : Theme.text-2;
+        animate x { duration: Theme.medium; easing: ease-out; }
+    }
+    if root.interactive: TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+export component Slider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in-out property <float> value;
+    // A marker on the track, e.g. 100 % on a 0-200 % volume slider.
+    in property <float> mark: -1000000;
+    callback changed(float);
+
+    height: 20px;
+    min-width: 80px;
+
+    function set-from(position: length) {
+        let fraction = clamp((position - thumb.width / 2) / (root.width - thumb.width), 0, 1);
+        let raw = root.minimum + fraction * (root.maximum - root.minimum);
+        let snapped = clamp(round(raw / root.step) * root.step, root.minimum, root.maximum);
+        if snapped != root.value {
+            root.value = snapped;
+            root.changed(snapped);
+        }
+    }
+
+    function nudge(steps: float) {
+        let next = clamp(root.value + steps * root.step, root.minimum, root.maximum);
+        if next != root.value {
+            root.value = next;
+            root.changed(next);
+        }
+    }
+
+    track := Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.track;
+    }
+    if root.mark >= root.minimum: Rectangle {
+        x: thumb.width / 2 + (root.width - thumb.width) * (root.mark - root.minimum) / (root.maximum - root.minimum) - 1px;
+        y: (parent.height - 10px) / 2;
+        width: 2px;
+        height: 10px;
+        border-radius: 1px;
+        background: Theme.border-strong;
+    }
+    Rectangle {
+        x: 0;
+        y: track.y;
+        height: 4px;
+        width: thumb.x + thumb.width / 2;
+        border-radius: 2px;
+        background: Theme.text;
+    }
+    thumb := Rectangle {
+        width: touch.pressed ? 16px : 14px;
+        height: self.width;
+        x: (root.width - 14px) * (root.value - root.minimum) / (root.maximum - root.minimum) + (14px - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: Theme.text;
+        drop-shadow-blur: 4px;
+        drop-shadow-color: #00000080;
+        animate width { duration: Theme.fast; }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.set-from(self.mouse-x);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.set-from(self.mouse-x);
+            }
+        }
+        scroll-event(event) => {
+            if event.delta-y > 0 {
+                root.nudge(1);
+                return accept;
+            } else if event.delta-y < 0 {
+                root.nudge(-1);
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// Side-by-side choices, one selected.
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in property <int> selected;
+    callback select(int);
+
+    height: 30px;
+    border-radius: 7px;
+    background: Theme.raised;
+    border-width: 1px;
+    border-color: Theme.border;
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for option[index] in root.options: Rectangle {
+            border-radius: 5px;
+            background: index == root.selected ? Theme.border-strong : touch.has-hover ? Theme.raised-hover : transparent;
+            animate background { duration: Theme.fast; }
+            touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.select(index); }
+            }
+            Text {
+                text: option;
+                color: index == root.selected ? Theme.text : Theme.text-2;
+                font-size: 12px;
+                font-weight: index == root.selected ? 600 : 400;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// A menu row: icon, label, and a check, toggle or submenu arrow on the right.
+export component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    // -1: none, 0: off, 1: on.
+    in property <int> toggle: -1;
+    in property <bool> checked;
+    in property <bool> submenu;
+    in property <string> hint;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 5px;
+    background: touch.has-hover && root.enabled ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.raised) : transparent;
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        if root.icon != "": Icon {
+            width: 16px;
+            text: root.icon;
+            color: root.danger ? Theme.danger : Theme.text-2;
+        }
+        Text {
+            text: root.text;
+            color: !root.enabled ? Theme.text-3 : root.danger ? Theme.danger : Theme.text;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.hint != "": Text {
+            text: root.hint;
+            color: Theme.text-3;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        if root.toggle >= 0: VerticalLayout {
+            alignment: center;
+            Toggle {
+                checked: root.toggle == 1;
+                interactive: false;
+            }
+        }
+        if root.checked: Icon {
+            text: Glyph.check;
+            font-size: 12px;
+            color: Theme.text;
+        }
+        if root.submenu: Icon {
+            text: Glyph.chevron-right;
+            font-size: 9px;
+        }
+    }
+}
+
+export component MenuDivider inherits Rectangle {
+    height: 9px;
+    Rectangle {
+        y: 4px;
+        height: 1px;
+        background: Theme.border;
+    }
+}
+
+// The floating panel menus and dropdowns are drawn on.
+export component MenuSurface inherits Rectangle {
+    background: Theme.surface;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    drop-shadow-blur: 18px;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-color: Theme.shadow;
+}
+
+// A dropdown.
+export component Select inherits Rectangle {
+    in property <[string]> options;
+    in property <int> selected;
+    callback select(int);
+
+    height: 32px;
+    border-radius: 6px;
+    background: touch.has-hover ? Theme.raised-hover : Theme.raised;
+    border-width: 1px;
+    border-color: Theme.border;
+    animate background { duration: Theme.fast; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text {
+            text: root.selected >= 0 && root.selected < root.options.length ? root.options[root.selected] : "";
+            color: Theme.text;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Icon {
+            text: Glyph.chevron-down;
+            font-size: 10px;
+        }
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+        height: min(list.preferred-height, 280px);
+        MenuSurface {
+            clip: true;
+            Flickable {
+                content-height: list.preferred-height;
+                list := VerticalLayout {
+                    padding: 4px;
+                    for option[index] in root.options: MenuRow {
+                        text: option;
+                        checked: index == root.selected;
+                        clicked => {
+                            root.select(index);
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component TextField inherits Rectangle {
+    in property <string> placeholder;
+    in property <string> icon;
+    in property <bool> password;
+    // Shown at the right while the field is empty and unfocused, e.g. a shortcut.
+    in property <[string]> shortcut;
+    in-out property <string> text <=> input.text;
+    out property <bool> has-focus: input.has-focus;
+    // Bump to move the keyboard focus here.
+    in property <int> focus-request;
+    changed focus-request => { input.focus(); }
+    callback edited(string);
+    callback accepted(string);
+    callback escape();
+
+    forward-focus: input;
+    height: 32px;
+    border-radius: 6px;
+    background: input.has-focus ? Theme.raised : touch.has-hover ? Theme.raised-hover : Theme.raised;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.focus : Theme.border;
+    animate border-color { duration: Theme.fast; }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 8px;
+        if root.icon != "": Icon {
+            text: root.icon;
+            font-size: 13px;
+            color: Theme.text-3;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            if input.text == "": Text {
+                width: 100%;
+                text: root.placeholder;
+                color: Theme.text-3;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            keys := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.escape();
+                        return accept;
+                    }
+                    reject
+                }
+                input := TextInput {
+                    width: 100%;
+                    height: 100%;
+                    color: Theme.text;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    single-line: true;
+                    selection-background-color: Theme.focus;
+                    selection-foreground-color: Theme.text;
+                    input-type: root.password ? InputType.password : InputType.text;
+                    edited => { root.edited(self.text); }
+                    accepted => { root.accepted(self.text); }
+                }
+            }
+        }
+        if root.shortcut.length > 0 && input.text == "" && !input.has-focus: HorizontalLayout {
+            spacing: 3px;
+            alignment: center;
+            for key in root.shortcut: VerticalLayout {
+                alignment: center;
+                Kbd { text: key; }
+            }
+        }
+    }
+}
+
+// Shows a hotkey as key caps; click to record a new one.
+export component KeyField inherits Rectangle {
+    in property <[string]> keys;
+    in property <bool> capturing;
+    // Another key is being recorded.
+    in property <bool> busy;
+    callback capture();
+    callback clear();
+
+    height: 32px;
+    border-radius: 6px;
+    background: touch.has-hover && !root.busy ? Theme.raised-hover : Theme.raised;
+    border-width: 1px;
+    border-color: root.capturing ? Theme.text-2 : Theme.border;
+    animate border-color { duration: Theme.fast; }
+    touch := TouchArea {
+        enabled: !root.busy;
+        mouse-cursor: pointer;
+        clicked => { root.capture(); }
+    }
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 4px;
+        spacing: 4px;
+        if root.capturing: Text {
+            text: "Press a key or combination… Esc cancels";
+            color: Theme.text;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if !root.capturing && root.keys.length == 0: Text {
+            text: "Click to set";
+            color: Theme.text-3;
+            font-size: 12px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if !root.capturing && root.keys.length > 0: HorizontalLayout {
+            spacing: 4px;
+            alignment: start;
+            horizontal-stretch: 1;
+            for key in root.keys: VerticalLayout {
+                alignment: center;
+                Kbd { text: key; }
+            }
+        }
+        if !root.capturing && root.keys.length > 0: VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: Glyph.clear;
+                size: 24px;
+                glyph-size: 10px;
+                enabled: !root.busy;
+                clicked => { root.clear(); }
+            }
+        }
+    }
+}
+
+// A vertical scroll area with a thin overlay scrollbar.
+export component ScrollArea inherits Rectangle {
+    in property <length> content-height;
+    out property <length> scroll-y: -flick.content-y;
+
+    public function scroll-to-top() {
+        flick.content-y = 0;
+    }
+
+    flick := Flickable {
+        width: root.width;
+        height: root.height;
+        content-width: root.width;
+        content-height: max(root.content-height, root.height);
+        @children
+    }
+    if root.content-height > root.height: Rectangle {
+        property <length> thumb-height: max(28px, root.height * root.height / root.content-height);
+        x: root.width - 7px;
+        width: 4px;
+        height: self.thumb-height;
+        y: 2px + (-flick.content-y) / (root.content-height - root.height) * (root.height - self.thumb-height - 4px);
+        border-radius: 2px;
+        background: drag.pressed ? Theme.text-3 : Theme.border-strong;
+        opacity: drag.has-hover || drag.pressed ? 1 : 0.7;
+        drag := TouchArea {
+            x: -4px;
+            width: parent.width + 8px;
+            property <length> start-y;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    self.start-y = -flick.content-y;
+                }
+            }
+            moved => {
+                if self.pressed {
+                    let delta = (self.mouse-y - self.pressed-y) * (root.content-height - root.height)
+                        / (root.height - parent.thumb-height - 4px);
+                    flick.content-y = -clamp(self.start-y + delta, 0, root.content-height - root.height);
+                }
+            }
+        }
+    }
+}
+
+// A labeled setting: title and description on the left, the control on the right (or below).
+export component SettingRow inherits VerticalLayout {
+    in property <string> title;
+    in property <string> description;
+    spacing: 2px;
+    HorizontalLayout {
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                color: Theme.text-3;
+                font-size: 11.5px;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
+// A small uppercase heading.
+export component Caption inherits Text {
+    color: Theme.text-3;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    vertical-alignment: center;
+}

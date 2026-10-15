@@ -24,6 +24,9 @@ pub enum Event {
     PassiveUpdate(PassiveUpdate),
     VoiceStateUpdate(Box<VoiceState>),
     VoiceServerUpdate(VoiceServerUpdate),
+    /// Added or changed (a nickname, say).
+    RelationshipAdd(Relationship),
+    RelationshipRemove(Relationship),
     Other(String),
 }
 
@@ -52,6 +55,8 @@ impl Event {
             "PASSIVE_UPDATE_V2" => Event::PassiveUpdate(de(data)?),
             "VOICE_STATE_UPDATE" => Event::VoiceStateUpdate(de(data)?),
             "VOICE_SERVER_UPDATE" => Event::VoiceServerUpdate(de(data)?),
+            "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => Event::RelationshipAdd(de(data)?),
+            "RELATIONSHIP_REMOVE" => Event::RelationshipRemove(de(data)?),
             other => Event::Other(other.to_owned()),
         })
     }
@@ -114,6 +119,21 @@ mod tests {
             panic!("expected GUILD_CREATE")
         };
         assert!(guild.take_properties().is_none());
+    }
+
+    #[test]
+    fn relationships_parse_with_or_without_the_user() {
+        let Event::RelationshipAdd(added) = parse(
+            "RELATIONSHIP_ADD",
+            r#"{"id": "2", "type": 1, "nickname": "Bro", "user": {"id": "2", "username": "friend"}}"#,
+        ) else {
+            panic!("expected RELATIONSHIP_ADD")
+        };
+        assert_eq!((added.id, added.kind, added.nickname.as_deref()), (Id(2), 1, Some("Bro")));
+        let Event::RelationshipRemove(removed) = parse("RELATIONSHIP_REMOVE", r#"{"id": "2", "type": 1}"#) else {
+            panic!("expected RELATIONSHIP_REMOVE")
+        };
+        assert!(removed.user.is_none());
     }
 
     #[test]

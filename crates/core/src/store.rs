@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use bardo_gateway::{
-    Channel, Event, GatewayGuild, Id, Member, Ready, ReadySupplemental, Role, User, VoiceState,
+    Channel, Event, GatewayGuild, Id, Member, Ready, ReadySupplemental, Relationship, Role, User, VoiceState,
+    relationship_kind,
 };
 
 #[derive(Default)]
@@ -14,6 +15,8 @@ pub struct Store {
     /// Guild ids in the order the gateway sent them.
     pub guild_order: Vec<Id>,
     pub private_channels: HashMap<Id, Channel>,
+    /// Our friends, with the nickname we gave them.
+    pub friends: HashMap<Id, Option<String>>,
 }
 
 pub struct Guild {
@@ -111,6 +114,10 @@ impl Store {
                 // DM and group calls are not tracked yet.
                 None => return false,
             },
+            Event::RelationshipAdd(relationship) => self.upsert_relationship(relationship),
+            Event::RelationshipRemove(relationship) => {
+                self.friends.remove(&relationship.id);
+            }
             Event::Resumed
             | Event::AuthTokenUpdate(_)
             | Event::VoiceServerUpdate(_)
@@ -131,10 +138,12 @@ impl Store {
             .map(|user| user.display_name().to_owned())
     }
 
-    /// Users in voice channels whose name we cannot resolve, grouped by guild.
-    pub fn unresolved_voice_users(&self) -> Vec<(Id, Vec<Id>)> {
+    /// Users in voice channels whose name we cannot resolve, grouped by guild, for the guilds
+    /// that `wanted` accepts.
+    pub fn unresolved_voice_users(&self, wanted: impl Fn(Id) -> bool) -> Vec<(Id, Vec<Id>)> {
         self.guilds
             .values()
+            .filter(|guild| wanted(guild.id))
             .filter_map(|guild| {
                 let missing: Vec<Id> = guild
                     .voice_states
@@ -153,6 +162,9 @@ impl Store {
         self.users.insert(ready.user.id, ready.user.clone());
         self.me = Some(ready.user);
         self.private_channels = ready.private_channels.into_iter().map(|c| (c.id, c)).collect();
+        for relationship in ready.relationships {
+            self.upsert_relationship(relationship);
+        }
 
         let mut merged_members = ready.merged_members.into_iter();
         for guild in ready.guilds {
@@ -206,6 +218,24 @@ impl Store {
         for state in gateway_guild.voice_states {
             self.upsert_voice_state(id, state);
         }
+    }
+
+    fn upsert_relationship(&mut self, mut relationship: Relationship) {
+        if let Some(user) = relationship.user.take() {
+            self.users.insert(user.id, user);
+        }
+        if relationship.kind == relationship_kind::FRIEND {
+            self.friends.insert(relationship.id, relationship.nickname);
+        } else {
+            // A friend became blocked, say.
+            self.friends.remove(&relationship.id);
+        }
+    }
+
+    /// How we call a friend: our nickname for them, then their global name, then their username.
+    pub fn friend_name(&self, user_id: Id) -> Option<String> {
+        let nickname = self.friends.get(&user_id)?;
+        nickname.clone().or_else(|| self.users.get(&user_id).map(|user| user.display_name().to_owned()))
     }
 
     fn upsert_channel(&mut self, channel: Channel) {

@@ -1,881 +1,625 @@
-import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, Slider } from "std-widgets.slint";
+import { Theme, Glyph } from "theme.slint";
+import {
+    Avatar, Button, ButtonKind, IconButton, MenuDivider, MenuRow, MenuSurface, ScrollArea, Slider, TextField,
+} from "controls.slint";
+import {
+    Api, ChannelRow, GuildRow, HintRow, MoreRow, ParticipantRow, PersonRow, PlaceRow, Row, RowKind, SectionRow,
+    Target,
+} from "rows.slint";
+import { SettingsPage, SettingsUi, SettingsView } from "settings.slint";
 
-export enum RowKind { guild, channel, participant }
+export { Api, Row, RowKind, SettingsUi, SettingsView, Target }
 
-// A voice channel someone can be moved to.
-export struct Target {
-    id: string,
-    name: string,
-}
-
-// Our own voice connection, shown in the bar at the bottom.
+// Our own voice connection, shown above the user panel.
 export struct VoiceBar {
     active: bool,
     connected: bool,
     status: string,
     channel: string,
     guild: string,
-    muted: bool,
-    deafened: bool,
-}
-
-export struct Row {
-    kind: RowKind,
-    id: string,
-    label: string,
-    guild-id: string,
-    // Guild rows.
-    expanded: bool,
-    // Channel rows.
-    count: int,
-    limit: int,
-    can-connect: bool,
-    // We are in (or joining) this channel.
-    current: bool,
-    // Participant rows.
-    initial: string,
-    self-mute: bool,
-    self-deaf: bool,
-    server-mute: bool,
-    server-deaf: bool,
-    live: bool,
-    speaking: bool,
-    is-me: bool,
-    // Local playback settings.
-    local-mute: bool,
-    volume: int,
-    // Moderation actions allowed on this participant.
-    can-mute: bool,
-    can-deafen: bool,
-    can-move: bool,
-    targets: [Target],
-}
-
-global Theme {
-    out property <color> background: #16171a;
-    out property <color> hover: #24262b;
-    out property <color> card: #202227;
-    out property <color> scrim: #000000a0;
-    out property <color> text: #e6e7ea;
-    out property <color> muted-text: #8b9099;
-    out property <color> danger: #e5484d;
-    out property <color> ok: #3fb950;
-    out property <color> warn: #d29922;
-    out property <color> live: #e5484d;
-    out property <color> avatar: #3a3e46;
-    out property <color> speaking: #3fb950;
-    out property <string> icon-font: "Segoe Fluent Icons";
-}
-
-// Segoe Fluent Icons code points.
-global Glyph {
-    out property <string> chevron-down: "\u{E70D}";
-    out property <string> chevron-right: "\u{E76C}";
-    out property <string> speaker: "\u{E767}";
-    out property <string> speaker-off: "\u{E74F}";
-    out property <string> mic: "\u{E720}";
-    out property <string> mic-off: "\u{EC54}";
-    out property <string> headphones: "\u{E7F6}";
-    out property <string> hang-up: "\u{E778}";
-    out property <string> settings: "\u{E713}";
-}
-
-// The voice settings sheet's state.
-export struct VoiceSettingsView {
-    inputs: [string],
-    outputs: [string],
-    input-index: int,
-    output-index: int,
-    push-to-talk: bool,
-    key-name: string,
-    mute-key: string,
-    deafen-key: string,
-    // The hotkey being captured: -1 none, 0 push-to-talk, 1 mute, 2 deafen.
-    capturing: int,
-    noise-suppression: bool,
-    auto-gain: bool,
-    autostart: bool,
-    close-to-tray: bool,
-}
-
-component Icon inherits Text {
-    font-family: Theme.icon-font;
-    font-size: 14px;
-    color: Theme.muted-text;
-    vertical-alignment: center;
-    horizontal-alignment: center;
-}
-
-// Headphones with a slash across them: deafened.
-component DeafIcon inherits Rectangle {
-    in property <color> tint: Theme.muted-text;
-    width: 16px;
-    Icon {
-        text: Glyph.headphones;
-        color: root.tint;
-    }
-    Path {
-        width: 12px;
-        height: 12px;
-        commands: "M 0 0 L 12 12";
-        stroke: root.tint;
-        stroke-width: 1.5px;
-    }
-}
-
-component GuildRow inherits Rectangle {
-    in property <Row> item;
-    callback toggled();
-
-    background: touch.has-hover ? Theme.hover : transparent;
-    touch := TouchArea {
-        clicked => { root.toggled(); }
-    }
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 6px;
-        Icon {
-            width: 14px;
-            font-size: 10px;
-            text: root.item.expanded ? Glyph.chevron-down : Glyph.chevron-right;
-        }
-        Text {
-            text: root.item.label;
-            color: Theme.text;
-            font-weight: 600;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-    }
-}
-
-component ChannelRow inherits Rectangle {
-    in property <Row> item;
-    callback join();
-
-    background: touch.has-hover && root.item.can-connect ? Theme.hover : transparent;
-    touch := TouchArea {
-        mouse-cursor: root.item.can-connect && !root.item.current ? MouseCursor.pointer : MouseCursor.default;
-        clicked => {
-            if root.item.can-connect && !root.item.current {
-                root.join();
-            }
-        }
-    }
-    HorizontalLayout {
-        padding-left: 22px;
-        padding-right: 10px;
-        spacing: 6px;
-        Icon {
-            width: 16px;
-            text: Glyph.speaker;
-            color: root.item.current ? Theme.ok : Theme.muted-text;
-        }
-        Text {
-            text: root.item.label;
-            color: root.item.current ? Theme.ok : root.item.count > 0 ? Theme.text : Theme.muted-text;
-            font-weight: root.item.current ? 600 : 400;
-            vertical-alignment: center;
-            overflow: elide;
-            horizontal-stretch: 1;
-        }
-        if root.item.limit > 0: Text {
-            text: root.item.count + "/" + root.item.limit;
-            color: Theme.muted-text;
-            font-size: 11px;
-            vertical-alignment: center;
-        }
-    }
-}
-
-component ParticipantRow inherits Rectangle {
-    in property <Row> item;
-    callback server-mute(bool);
-    callback server-deafen(bool);
-    callback move-to(string);
-    callback disconnect();
-    callback local-mute(bool);
-    callback edit-volume();
-
-    background: touch.has-hover ? Theme.hover : transparent;
-    touch := TouchArea { }
-    ContextMenuArea {
-        enabled: !root.item.is-me || root.item.can-mute || root.item.can-deafen || root.item.can-move;
-        Menu {
-            if !root.item.is-me: MenuItem {
-                title: "Volume (" + root.item.volume + " %)…";
-                activated => { root.edit-volume(); }
-            }
-            if !root.item.is-me: MenuItem {
-                title: "Mute locally";
-                checked: root.item.local-mute;
-                activated => { root.local-mute(!root.item.local-mute); }
-            }
-            MenuSeparator { }
-            if root.item.can-mute: MenuItem {
-                title: "Server mute";
-                checked: root.item.server-mute;
-                activated => { root.server-mute(!root.item.server-mute); }
-            }
-            if root.item.can-deafen: MenuItem {
-                title: "Server deafen";
-                checked: root.item.server-deaf;
-                activated => { root.server-deafen(!root.item.server-deaf); }
-            }
-            if root.item.can-move && root.item.targets.length > 0: Menu {
-                title: "Move to";
-                for target in root.item.targets: MenuItem {
-                    title: target.name;
-                    activated => { root.move-to(target.id); }
-                }
-            }
-            if root.item.can-move: MenuItem {
-                title: "Disconnect";
-                activated => { root.disconnect(); }
-            }
-        }
-    }
-    HorizontalLayout {
-        padding-left: 44px;
-        padding-right: 10px;
-        spacing: 8px;
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: 20px;
-                height: 20px;
-                border-radius: 10px;
-                background: Theme.avatar;
-                border-width: root.item.speaking ? 2px : 0px;
-                border-color: Theme.speaking;
-                Text {
-                    text: root.item.initial;
-                    color: Theme.text;
-                    font-size: 10px;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-        }
-        Text {
-            text: root.item.label;
-            color: root.item.local-mute ? Theme.muted-text : Theme.text;
-            vertical-alignment: center;
-            overflow: elide;
-            horizontal-stretch: 1;
-        }
-        if !root.item.is-me && !root.item.local-mute && root.item.volume != 100: Text {
-            text: root.item.volume + "%";
-            color: Theme.muted-text;
-            font-size: 10px;
-            vertical-alignment: center;
-        }
-        if root.item.live: VerticalLayout {
-            alignment: center;
-            Rectangle {
-                background: Theme.live;
-                border-radius: 3px;
-                height: 14px;
-                width: live-text.preferred-width + 8px;
-                live-text := Text {
-                    text: "LIVE";
-                    color: white;
-                    font-size: 9px;
-                    font-weight: 700;
-                }
-            }
-        }
-        if root.item.local-mute: Icon {
-            width: 16px;
-            text: Glyph.speaker-off;
-            color: Theme.warn;
-        }
-        if root.item.self-mute || root.item.server-mute: Icon {
-            width: 16px;
-            text: Glyph.mic-off;
-            color: root.item.server-mute ? Theme.danger : Theme.muted-text;
-        }
-        if root.item.self-deaf || root.item.server-deaf: DeafIcon {
-            tint: root.item.server-deaf ? Theme.danger : Theme.muted-text;
-        }
-    }
-}
-
-// Bottom sheet with a slider for one participant's local volume.
-component VolumeSheet inherits Rectangle {
-    in property <string> name;
-    in-out property <float> value;
-    callback changed(int);
-    callback close();
-
-    background: Theme.scrim;
-    TouchArea {
-        clicked => { root.close(); }
-    }
-    Rectangle {
-        x: 12px;
-        width: parent.width - 24px;
-        height: layout.preferred-height;
-        y: parent.height - self.height - 12px;
-        background: Theme.card;
-        border-radius: 8px;
-        // Keeps clicks on the card from closing the sheet.
-        TouchArea { }
-        layout := VerticalLayout {
-            padding: 14px;
-            spacing: 10px;
-            HorizontalLayout {
-                spacing: 8px;
-                Text {
-                    text: root.name;
-                    color: Theme.text;
-                    font-weight: 600;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
-                Text {
-                    text: round(root.value) + " %";
-                    color: Theme.muted-text;
-                }
-            }
-            Slider {
-                minimum: 0;
-                maximum: 200;
-                step: 5;
-                value <=> root.value;
-                // Clicking the track lands anywhere; snap to the step like the keyboard does.
-                changed(value) => {
-                    root.value = round(value / 5) * 5;
-                    root.changed(root.value);
-                }
-            }
-            HorizontalLayout {
-                alignment: end;
-                spacing: 8px;
-                Button {
-                    text: "Reset";
-                    clicked => {
-                        root.value = 100;
-                        root.changed(100);
-                    }
-                }
-                Button {
-                    text: "Done";
-                    primary: true;
-                    clicked => { root.close(); }
-                }
-            }
-        }
-    }
-}
-
-component IconButton inherits Rectangle {
-    in property <string> glyph;
-    in property <bool> active;
-    in property <bool> slashed;
-    in property <color> active-color: Theme.danger;
-    callback clicked();
-
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    background: touch.pressed ? Theme.background : touch.has-hover ? Theme.hover : transparent;
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
-    Icon {
-        font-size: 16px;
-        text: root.glyph;
-        color: root.active ? root.active-color : Theme.text;
-    }
-    if root.slashed: Path {
-        width: 14px;
-        height: 14px;
-        commands: "M 0 0 L 14 14";
-        stroke: root.active-color;
-        stroke-width: 1.5px;
-    }
-}
-
-component VoiceBarView inherits Rectangle {
-    in property <VoiceBar> voice;
-    callback toggle-mute();
-    callback toggle-deafen();
-    callback leave();
-
-    background: Theme.card;
-    HorizontalLayout {
-        padding: 8px;
-        padding-left: 14px;
-        spacing: 4px;
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: root.voice.status;
-                color: root.voice.connected ? Theme.ok : Theme.warn;
-                font-weight: 600;
-                overflow: elide;
-            }
-            Text {
-                text: root.voice.channel + " / " + root.voice.guild;
-                color: Theme.muted-text;
-                font-size: 11px;
-                overflow: elide;
-            }
-        }
-        IconButton {
-            glyph: root.voice.muted || root.voice.deafened ? Glyph.mic-off : Glyph.mic;
-            active: root.voice.muted || root.voice.deafened;
-            clicked => { root.toggle-mute(); }
-        }
-        IconButton {
-            glyph: Glyph.headphones;
-            active: root.voice.deafened;
-            slashed: root.voice.deafened;
-            clicked => { root.toggle-deafen(); }
-        }
-        IconButton {
-            glyph: Glyph.hang-up;
-            active: true;
-            clicked => { root.leave(); }
-        }
-    }
-}
-
-component Label inherits Text {
-    color: Theme.muted-text;
-    font-size: 11px;
-}
-
-// A hotkey with its binding and buttons to change or clear it.
-component KeyRow inherits HorizontalLayout {
-    in property <string> label;
-    in property <string> key-name;
-    in property <bool> capturing;
-    // Another hotkey is being captured.
-    in property <bool> busy;
-    callback capture();
-    callback clear();
-
-    spacing: 8px;
-    Text {
-        text: root.label;
-        color: Theme.text;
-        vertical-alignment: center;
-        min-width: 90px;
-    }
-    Text {
-        text: root.capturing ? "Press a key… (Esc cancels)" : root.key-name == "" ? "Not set" : root.key-name;
-        color: root.capturing ? Theme.warn : root.key-name == "" ? Theme.muted-text : Theme.text;
-        vertical-alignment: center;
-        overflow: elide;
-        horizontal-stretch: 1;
-    }
-    Button {
-        text: "Set";
-        enabled: !root.busy;
-        clicked => { root.capture(); }
-    }
-    if root.key-name != "": Button {
-        text: "Clear";
-        enabled: !root.busy;
-        clicked => { root.clear(); }
-    }
-}
-
-// Voice settings: devices, input volume, voice activity or push-to-talk, noise suppression.
-component SettingsSheet inherits Rectangle {
-    in property <VoiceSettingsView> view;
-    in-out property <float> threshold;
-    // Microphone volume in percent.
-    in-out property <float> input-volume;
-    // Input level in dBFS, refreshed while the sheet is open.
-    in property <float> level;
-    in property <bool> in-voice;
-    callback select-input(int);
-    callback select-output(int);
-    callback set-push-to-talk(bool);
-    callback capture-key(int);
-    callback clear-key(int);
-    callback set-threshold(float);
-    callback set-noise-suppression(bool);
-    callback set-input-volume(float);
-    callback set-auto-gain(bool);
-    callback set-autostart(bool);
-    callback set-close-to-tray(bool);
-    callback close();
-
-    background: Theme.scrim;
-    TouchArea {
-        clicked => { root.close(); }
-    }
-    Rectangle {
-        x: 12px;
-        width: parent.width - 24px;
-        height: min(layout.preferred-height, parent.height - 24px);
-        y: parent.height - self.height - 12px;
-        background: Theme.card;
-        border-radius: 8px;
-        clip: true;
-        // Keeps clicks on the card from closing the sheet.
-        TouchArea { }
-        ScrollView {
-        content-height: layout.preferred-height;
-        layout := VerticalLayout {
-            width: parent.width;
-            padding: 14px;
-            spacing: 6px;
-            Text {
-                text: "Voice settings";
-                color: Theme.text;
-                font-weight: 600;
-            }
-            Label { text: "Input device"; }
-            ComboBox {
-                model: root.view.inputs;
-                current-index: root.view.input-index;
-                selected => { root.select-input(self.current-index); }
-            }
-            Label { text: "Output device"; }
-            ComboBox {
-                model: root.view.outputs;
-                current-index: root.view.output-index;
-                selected => { root.select-output(self.current-index); }
-            }
-            Label { text: "Input volume: " + round(root.input-volume) + "%"; }
-            Slider {
-                minimum: 0;
-                maximum: 200;
-                value <=> root.input-volume;
-                changed(value) => {
-                    root.input-volume = round(value);
-                    root.set-input-volume(root.input-volume);
-                }
-            }
-            Label { text: "Input mode"; }
-            ComboBox {
-                model: ["Voice activity", "Push to talk"];
-                current-index: root.view.push-to-talk ? 1 : 0;
-                selected => { root.set-push-to-talk(self.current-index == 1); }
-            }
-            if root.view.push-to-talk: KeyRow {
-                label: "Key";
-                key-name: root.view.key-name;
-                capturing: root.view.capturing == 0;
-                busy: root.view.capturing >= 0;
-                capture => { root.capture-key(0); }
-                clear => { root.clear-key(0); }
-            }
-            if !root.view.push-to-talk: VerticalLayout {
-                spacing: 4px;
-                Label {
-                    text: "Sensitivity: " + round(root.threshold) + " dB"
-                        + (root.in-voice ? "" : " (join a channel to see your level)");
-                }
-                Rectangle {
-                    height: 6px;
-                    border-radius: 3px;
-                    background: Theme.background;
-                    Rectangle {
-                        x: 0;
-                        width: parent.width * clamp((root.level + 100) / 100, 0, 1);
-                        border-radius: 3px;
-                        background: root.level >= root.threshold ? Theme.ok : Theme.muted-text;
-                    }
-                    Rectangle {
-                        x: parent.width * clamp((root.threshold + 100) / 100, 0, 1) - 1px;
-                        width: 2px;
-                        background: Theme.warn;
-                    }
-                }
-                Slider {
-                    minimum: -100;
-                    maximum: 0;
-                    value <=> root.threshold;
-                    changed(value) => {
-                        root.threshold = round(value);
-                        root.set-threshold(root.threshold);
-                    }
-                }
-            }
-            CheckBox {
-                text: "Noise suppression";
-                checked: root.view.noise-suppression;
-                toggled => { root.set-noise-suppression(self.checked); }
-            }
-            CheckBox {
-                text: "Automatic gain control";
-                checked: root.view.auto-gain;
-                toggled => { root.set-auto-gain(self.checked); }
-            }
-            Label { text: "Hotkeys (work while bardo is in the background)"; }
-            KeyRow {
-                label: "Mute";
-                key-name: root.view.mute-key;
-                capturing: root.view.capturing == 1;
-                busy: root.view.capturing >= 0;
-                capture => { root.capture-key(1); }
-                clear => { root.clear-key(1); }
-            }
-            KeyRow {
-                label: "Deafen";
-                key-name: root.view.deafen-key;
-                capturing: root.view.capturing == 2;
-                busy: root.view.capturing >= 0;
-                capture => { root.capture-key(2); }
-                clear => { root.clear-key(2); }
-            }
-            Label { text: "Window"; }
-            CheckBox {
-                text: "Start with Windows (in the tray)";
-                checked: root.view.autostart;
-                toggled => { root.set-autostart(self.checked); }
-            }
-            CheckBox {
-                text: "Closing keeps bardo in the tray";
-                checked: root.view.close-to-tray;
-                toggled => { root.set-close-to-tray(self.checked); }
-            }
-            HorizontalLayout {
-                alignment: end;
-                Button {
-                    text: "Done";
-                    primary: true;
-                    clicked => { root.close(); }
-                }
-            }
-        }
-        }
-    }
 }
 
 component LoginView inherits Rectangle {
     in property <string> error;
     callback submit(string);
 
+    background: Theme.bg;
     VerticalLayout {
         alignment: center;
         padding: 28px;
         spacing: 12px;
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../assets/icon.png");
+                width: 64px;
+                height: 64px;
+            }
+        }
         Text {
             text: "bardo";
-            font-size: 28px;
-            font-weight: 700;
             color: Theme.text;
+            font-size: 24px;
+            font-weight: 700;
             horizontal-alignment: center;
         }
         Text {
-            text: "Paste your Discord token. It is stored in Windows Credential Manager.";
-            color: Theme.muted-text;
-            wrap: word-wrap;
+            text: "Discord voice, and nothing else.";
+            color: Theme.text-3;
+            font-size: 13px;
             horizontal-alignment: center;
         }
-        token := LineEdit {
-            input-type: password;
-            placeholder-text: "Token";
-            accepted(text) => { root.submit(text); }
+        Rectangle { height: 12px; }
+        Text {
+            text: "Discord token";
+            color: Theme.text-2;
+            font-size: 12px;
         }
-        Button {
-            text: "Sign in";
-            primary: true;
-            enabled: token.text != "";
-            clicked => { root.submit(token.text); }
+        token := TextField {
+            password: true;
+            placeholder: "Paste your token";
+            accepted(text) => { root.submit(text); }
         }
         if root.error != "": Text {
             text: root.error;
             color: Theme.danger;
+            font-size: 12px;
             wrap: word-wrap;
+        }
+        Button {
+            text: "Sign in";
+            kind: ButtonKind.primary;
+            enabled: token.text != "";
+            clicked => { root.submit(token.text); }
+        }
+        Text {
+            text: "The token stays on this PC, in Windows Credential Manager.";
+            color: Theme.text-3;
+            font-size: 11.5px;
             horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+component VoiceCard inherits Rectangle {
+    in property <VoiceBar> voice;
+    background: Theme.panel;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 8px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 6px;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 3.5px;
+                        background: root.voice.connected ? Theme.ok : Theme.warn;
+                    }
+                }
+                Text {
+                    text: root.voice.status;
+                    color: root.voice.connected ? Theme.ok : Theme.warn;
+                    font-size: 12px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: root.voice.channel + "  ·  " + root.voice.guild;
+                color: Theme.text-3;
+                font-size: 11.5px;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: Glyph.hang-up;
+                active: true;
+                clicked => { Api.leave-voice(); }
+            }
+        }
+    }
+}
+
+component UserPanel inherits Rectangle {
+    in property <string> name;
+    in property <string> initial;
+    in property <bool> speaking;
+    in property <bool> connected;
+    in property <string> status;
+    in property <bool> muted;
+    in property <bool> deafened;
+    callback toggle-mute();
+    callback toggle-deafen();
+    callback open-settings();
+
+    height: 54px;
+    background: Theme.panel;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            Avatar {
+                size: 34px;
+                initial: root.initial;
+                speaking: root.speaking;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.name;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: 5px;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: root.connected ? Theme.ok : Theme.warn;
+                    }
+                }
+                Text {
+                    text: root.status;
+                    color: Theme.text-3;
+                    font-size: 11.5px;
+                    overflow: elide;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: root.muted || root.deafened ? Glyph.mic-off : Glyph.mic;
+                active: root.muted || root.deafened;
+                clicked => { root.toggle-mute(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: Glyph.headphones;
+                active: root.deafened;
+                slashed: root.deafened;
+                clicked => { root.toggle-deafen(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: Glyph.settings;
+                clicked => { root.open-settings(); }
+            }
         }
     }
 }
 
 export component MainWindow inherits Window {
+    // 0: sign in, 1: main.
     in property <int> screen;
     in property <[Row]> rows;
     in property <string> status;
     in property <bool> connected;
     in property <string> login-error;
-    // A transient error shown under the header.
+    // A transient message shown above the footer.
     in property <string> notice;
-    // The participant whose volume is being edited; empty when the sheet is closed.
-    in property <string> volume-user;
-    in property <string> volume-name;
-    in-out property <float> volume-value;
     in property <VoiceBar> voice;
+    in property <string> me-name;
+    in property <string> me-initial;
+    in property <bool> me-speaking;
+    in property <bool> self-mute;
+    in property <bool> self-deaf;
     in property <bool> settings-open;
-    in property <VoiceSettingsView> voice-settings;
-    in-out property <float> threshold;
-    in-out property <float> input-volume;
-    in property <float> input-level;
+    in-out property <string> search;
     callback sign-in(string);
-    callback sign-out();
-    callback toggle-guild(string);
     callback dismiss-notice();
-    callback set-server-mute(string, string, bool);
-    callback set-server-deafen(string, string, bool);
-    callback move-member(string, string, string);
-    callback disconnect-member(string, string);
-    callback set-local-mute(string, bool);
-    callback edit-volume(string, string);
-    callback set-volume(string, int);
-    callback close-volume();
-    callback join-channel(string, string);
-    callback leave-voice();
     callback toggle-mute();
     callback toggle-deafen();
     callback open-settings();
-    callback close-settings();
-    callback select-input(int);
-    callback select-output(int);
-    callback set-push-to-talk(bool);
-    callback capture-key(int);
-    callback clear-key(int);
-    callback set-threshold(float);
-    callback set-noise-suppression(bool);
-    callback set-input-volume(float);
-    callback set-auto-gain(bool);
-    callback set-autostart(bool);
-    callback set-close-to-tray(bool);
+    callback search-edited(string);
+    // Enter in the search field: join the first result.
+    callback search-accepted();
+
+    // The open context menu.
+    property <Row> menu-row;
+    property <length> menu-x;
+    property <length> menu-y;
+    // 0: actions, 1: "Move to" targets.
+    property <int> menu-page;
+    property <float> menu-volume;
+    // Bumped by Ctrl+K.
+    property <int> search-focus;
+
+    function open-menu(row: Row, x: length, y: length) {
+        root.menu-row = row;
+        root.menu-x = x;
+        root.menu-y = y;
+        root.menu-page = 0;
+        root.menu-volume = row.volume;
+        menu.show();
+    }
 
     title: "bardo";
     icon: @image-url("../assets/icon.png");
     preferred-width: 340px;
-    preferred-height: 600px;
-    min-width: 260px;
-    min-height: 360px;
-    background: Theme.background;
+    preferred-height: 640px;
+    min-width: 280px;
+    min-height: 420px;
+    background: Theme.bg;
+    default-font-family: Theme.font;
+    default-font-size: 13px;
+    forward-focus: keys;
 
-    if root.screen == 0: LoginView {
-        error: root.login-error;
-        submit(token) => { root.sign-in(token); }
+    keys := FocusScope {
+        key-pressed(event) => {
+            if root.screen == 1 && event.modifiers.control && (event.text == "k" || event.text == "K") {
+                root.search-focus += 1;
+                return accept;
+            }
+            reject
+        }
+
+        if root.screen == 0: LoginView {
+            error: root.login-error;
+            submit(token) => { root.sign-in(token); }
+        }
+
+        if root.screen == 1: VerticalLayout {
+            Rectangle {
+                height: 50px;
+                background: Theme.panel;
+                HorizontalLayout {
+                    padding: 9px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    TextField {
+                        focus-request: root.search-focus;
+                        icon: Glyph.search;
+                        placeholder: "Search channels and people";
+                        shortcut: ["Ctrl", "K"];
+                        text <=> root.search;
+                        edited(text) => { root.search-edited(text); }
+                        accepted => { root.search-accepted(); }
+                        escape => {
+                            root.search = "";
+                            root.search-edited("");
+                            keys.focus();
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                height: 1px;
+                background: Theme.border;
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                list := ScrollArea {
+                    content-height: rows-layout.preferred-height;
+                    rows-layout := VerticalLayout {
+                        width: list.width;
+                        padding-bottom: 10px;
+                        for row in root.rows: Rectangle {
+                            height: row.kind == RowKind.section ? 32px
+                                : row.kind == RowKind.person ? 44px
+                                : row.kind == RowKind.guild ? 34px
+                                : row.kind == RowKind.channel ? 30px
+                                : row.kind == RowKind.participant ? 30px
+                                : row.kind == RowKind.more ? 26px
+                                : row.kind == RowKind.place ? 40px
+                                : 52px;
+                            if row.kind == RowKind.section: SectionRow { item: row; }
+                            if row.kind == RowKind.person: PersonRow {
+                                item: row;
+                                menu(x, y) => { root.open-menu(row, x, y); }
+                            }
+                            if row.kind == RowKind.guild: GuildRow {
+                                item: row;
+                                menu(x, y) => { root.open-menu(row, x, y); }
+                            }
+                            if row.kind == RowKind.channel: ChannelRow {
+                                item: row;
+                                menu(x, y) => { root.open-menu(row, x, y); }
+                            }
+                            if row.kind == RowKind.participant: ParticipantRow {
+                                item: row;
+                                clicked => {
+                                    root.open-menu(row, self.absolute-position.x + 60px, self.absolute-position.y + self.height);
+                                }
+                                menu(x, y) => { root.open-menu(row, x, y); }
+                            }
+                            if row.kind == RowKind.more: MoreRow { item: row; }
+                            if row.kind == RowKind.hint: HintRow { item: row; }
+                            if row.kind == RowKind.place: PlaceRow { item: row; }
+                        }
+                    }
+                }
+                if root.rows.length == 0: Text {
+                    text: root.search != "" ? "Nothing matches “" + root.search + "”"
+                        : root.connected ? "No voice channels" : "Connecting to Discord…";
+                    color: Theme.text-3;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if root.notice != "": Rectangle {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: notice-layout.preferred-height;
+                    y: parent.height - self.height - 10px;
+                    background: Theme.surface;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.border-strong;
+                    drop-shadow-blur: 14px;
+                    drop-shadow-color: Theme.shadow;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.dismiss-notice(); }
+                    }
+                    notice-layout := HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 12px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: start;
+                            padding-top: 5px;
+                            Rectangle {
+                                width: 7px;
+                                height: 7px;
+                                border-radius: 3.5px;
+                                background: Theme.danger;
+                            }
+                        }
+                        Text {
+                            text: root.notice;
+                            color: Theme.text;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+            }
+            if root.voice.active: Rectangle {
+                height: 1px;
+                background: Theme.border;
+            }
+            if root.voice.active: VoiceCard { voice: root.voice; }
+            Rectangle {
+                height: 1px;
+                background: Theme.border;
+            }
+            UserPanel {
+                name: root.me-name;
+                initial: root.me-initial;
+                speaking: root.me-speaking;
+                connected: root.connected;
+                status: root.status;
+                muted: root.self-mute;
+                deafened: root.self-deaf;
+                toggle-mute => { root.toggle-mute(); }
+                toggle-deafen => { root.toggle-deafen(); }
+                open-settings => { root.open-settings(); }
+            }
+        }
+
+        if root.screen == 1 && root.settings-open: SettingsPage { }
     }
 
-    if root.screen == 1: VerticalLayout {
-        HorizontalLayout {
-            padding: 8px;
-            padding-left: 14px;
-            spacing: 8px;
-            VerticalLayout {
-                alignment: center;
-                Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: root.connected ? Theme.ok : Theme.warn;
-                }
-            }
-            Text {
-                text: root.status;
-                color: Theme.muted-text;
-                vertical-alignment: center;
-                overflow: elide;
-                horizontal-stretch: 1;
-            }
-            IconButton {
-                glyph: Glyph.settings;
-                clicked => { root.open-settings(); }
-            }
-            Button {
-                text: "Sign out";
-                clicked => { root.sign-out(); }
-            }
-        }
-        Rectangle {
-            height: 1px;
-            background: Theme.hover;
-        }
-        if root.notice != "": Rectangle {
-            background: Theme.card;
-            TouchArea {
-                clicked => { root.dismiss-notice(); }
-            }
-            HorizontalLayout {
-                padding: 8px;
-                padding-left: 14px;
-                Text {
-                    text: root.notice;
-                    color: Theme.danger;
-                    wrap: word-wrap;
-                }
-            }
-        }
-        if root.connected && root.rows.length == 0: Text {
-            text: "No voice channels";
-            color: Theme.muted-text;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            vertical-stretch: 1;
-        }
-        ListView {
-            vertical-stretch: 1;
-            for row in root.rows: Rectangle {
-                height: row.kind == RowKind.guild ? 34px : row.kind == RowKind.channel ? 30px : 28px;
-                if row.kind == RowKind.guild: GuildRow {
-                    width: parent.width;
-                    height: parent.height;
-                    item: row;
-                    toggled => { root.toggle-guild(row.id); }
-                }
-                if row.kind == RowKind.channel: ChannelRow {
-                    width: parent.width;
-                    height: parent.height;
-                    item: row;
-                    join => { root.join-channel(row.guild-id, row.id); }
-                }
-                if row.kind == RowKind.participant: ParticipantRow {
-                    width: parent.width;
-                    height: parent.height;
-                    item: row;
-                    server-mute(on) => { root.set-server-mute(row.guild-id, row.id, on); }
-                    server-deafen(on) => { root.set-server-deafen(row.guild-id, row.id, on); }
-                    move-to(channel) => { root.move-member(row.guild-id, row.id, channel); }
-                    disconnect => { root.disconnect-member(row.guild-id, row.id); }
-                    local-mute(on) => { root.set-local-mute(row.id, on); }
-                    edit-volume => { root.edit-volume(row.id, row.label); }
-                }
-            }
-        }
-        if root.voice.active: VoiceBarView {
-            voice: root.voice;
-            toggle-mute => { root.toggle-mute(); }
-            toggle-deafen => { root.toggle-deafen(); }
-            leave => { root.leave-voice(); }
-        }
-    }
+    menu := PopupWindow {
+        x: max(6px, min(root.menu-x, root.width - self.width - 6px));
+        y: max(6px, min(root.menu-y, root.height - self.height - 6px));
+        width: 236px;
+        height: menu-layout.preferred-height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        MenuSurface {
+            menu-layout := VerticalLayout {
+                padding: 4px;
 
-    if root.screen == 1 && root.settings-open: SettingsSheet {
-        width: parent.width;
-        height: parent.height;
-        view: root.voice-settings;
-        threshold <=> root.threshold;
-        input-volume <=> root.input-volume;
-        level: root.input-level;
-        in-voice: root.voice.active;
-        select-input(index) => { root.select-input(index); }
-        select-output(index) => { root.select-output(index); }
-        set-push-to-talk(on) => { root.set-push-to-talk(on); }
-        capture-key(target) => { root.capture-key(target); }
-        clear-key(target) => { root.clear-key(target); }
-        set-autostart(on) => { root.set-autostart(on); }
-        set-close-to-tray(on) => { root.set-close-to-tray(on); }
-        set-threshold(value) => { root.set-threshold(value); }
-        set-noise-suppression(on) => { root.set-noise-suppression(on); }
-        set-input-volume(value) => { root.set-input-volume(value); }
-        set-auto-gain(on) => { root.set-auto-gain(on); }
-        close => { root.close-settings(); }
-    }
+                // People: participants and friends in voice.
+                if (root.menu-row.kind == RowKind.participant || root.menu-row.kind == RowKind.person) && root.menu-page == 0: VerticalLayout {
+                    HorizontalLayout {
+                        padding: 8px;
+                        padding-bottom: 6px;
+                        spacing: 10px;
+                        Avatar {
+                            size: 30px;
+                            initial: root.menu-row.initial;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 1px;
+                            Text {
+                                text: root.menu-row.label;
+                                color: Theme.text;
+                                font-size: 13px;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            if root.menu-row.is-me || root.menu-row.sublabel != "": Text {
+                                text: root.menu-row.is-me ? "You" : root.menu-row.sublabel;
+                                color: Theme.text-3;
+                                font-size: 11.5px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                    if !root.menu-row.is-me: VerticalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-bottom: 6px;
+                        spacing: 2px;
+                        HorizontalLayout {
+                            Text {
+                                text: "Volume";
+                                color: Theme.text-2;
+                                font-size: 12px;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: round(root.menu-volume) + "%";
+                                color: Theme.text;
+                                font-size: 12px;
+                            }
+                        }
+                        Slider {
+                            minimum: 0;
+                            maximum: 200;
+                            step: 5;
+                            mark: 100;
+                            value <=> root.menu-volume;
+                            changed(value) => { Api.set-volume(root.menu-row.id, value); }
+                        }
+                    }
+                    if !root.menu-row.is-me || root.menu-row.can-mute || root.menu-row.can-deafen: MenuDivider { }
+                    if root.menu-row.kind == RowKind.person && root.menu-row.can-connect && !root.menu-row.current: MenuRow {
+                        text: "Join their channel";
+                        icon: Glyph.join;
+                        clicked => {
+                            Api.join-channel(root.menu-row.guild-id, root.menu-row.channel-id);
+                            menu.close();
+                        }
+                    }
+                    if !root.menu-row.is-me: MenuRow {
+                        text: "Mute for me";
+                        icon: Glyph.speaker-off;
+                        toggle: root.menu-row.local-mute ? 1 : 0;
+                        clicked => {
+                            Api.set-local-mute(root.menu-row.id, !root.menu-row.local-mute);
+                            menu.close();
+                        }
+                    }
+                    if !root.menu-row.is-me && (root.menu-row.can-mute || root.menu-row.can-deafen || root.menu-row.can-move): MenuDivider { }
+                    if root.menu-row.can-mute: MenuRow {
+                        text: "Server mute";
+                        icon: Glyph.mic-off;
+                        toggle: root.menu-row.server-mute ? 1 : 0;
+                        clicked => {
+                            Api.set-server-mute(root.menu-row.guild-id, root.menu-row.id, !root.menu-row.server-mute);
+                            menu.close();
+                        }
+                    }
+                    if root.menu-row.can-deafen: MenuRow {
+                        text: "Server deafen";
+                        icon: Glyph.headphones;
+                        toggle: root.menu-row.server-deaf ? 1 : 0;
+                        clicked => {
+                            Api.set-server-deafen(root.menu-row.guild-id, root.menu-row.id, !root.menu-row.server-deaf);
+                            menu.close();
+                        }
+                    }
+                    if root.menu-row.can-move && root.menu-row.targets.length > 0: MenuRow {
+                        text: "Move to";
+                        icon: Glyph.move;
+                        submenu: true;
+                        clicked => { root.menu-page = 1; }
+                    }
+                    if root.menu-row.can-move: MenuRow {
+                        text: "Disconnect";
+                        icon: Glyph.hang-up;
+                        danger: true;
+                        clicked => {
+                            Api.disconnect-member(root.menu-row.guild-id, root.menu-row.id);
+                            menu.close();
+                        }
+                    }
+                }
 
-    if root.screen == 1 && root.volume-user != "": VolumeSheet {
-        width: parent.width;
-        height: parent.height;
-        name: root.volume-name;
-        value <=> root.volume-value;
-        changed(volume) => { root.set-volume(root.volume-user, volume); }
-        close => { root.close-volume(); }
+                // "Move to": the channels a participant can be moved to.
+                if root.menu-row.kind == RowKind.participant && root.menu-page == 1: VerticalLayout {
+                    MenuRow {
+                        text: "Move " + root.menu-row.label + " to";
+                        icon: Glyph.back;
+                        clicked => { root.menu-page = 0; }
+                    }
+                    MenuDivider { }
+                    Flickable {
+                        height: min(targets.preferred-height, 300px);
+                        content-height: targets.preferred-height;
+                        targets := VerticalLayout {
+                            for target in root.menu-row.targets: MenuRow {
+                                text: target.name;
+                                icon: Glyph.speaker;
+                                clicked => {
+                                    Api.move-member(root.menu-row.guild-id, root.menu-row.id, target.id);
+                                    menu.close();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.menu-row.kind == RowKind.guild: VerticalLayout {
+                    MenuRow {
+                        text: root.menu-row.pinned ? "Unpin server" : "Pin server";
+                        icon: root.menu-row.pinned ? Glyph.unpin : Glyph.pin;
+                        clicked => {
+                            Api.pin-guild(root.menu-row.id, !root.menu-row.pinned);
+                            menu.close();
+                        }
+                    }
+                    MenuRow {
+                        text: "Show empty channels";
+                        icon: Glyph.eye;
+                        toggle: root.menu-row.show-empty ? 1 : 0;
+                        clicked => {
+                            Api.toggle-empty(root.menu-row.id);
+                            menu.close();
+                        }
+                    }
+                    MenuRow {
+                        text: root.menu-row.expanded ? "Collapse" : "Expand";
+                        icon: root.menu-row.expanded ? Glyph.collapse : Glyph.chevron-down;
+                        clicked => {
+                            Api.toggle-guild(root.menu-row.id);
+                            menu.close();
+                        }
+                    }
+                }
+
+                if root.menu-row.kind == RowKind.channel: VerticalLayout {
+                    if root.menu-row.current: MenuRow {
+                        text: "Leave channel";
+                        icon: Glyph.hang-up;
+                        danger: true;
+                        clicked => {
+                            Api.leave-voice();
+                            menu.close();
+                        }
+                    }
+                    if !root.menu-row.current: MenuRow {
+                        text: "Join channel";
+                        icon: Glyph.join;
+                        enabled: root.menu-row.can-connect;
+                        clicked => {
+                            Api.join-channel(root.menu-row.guild-id, root.menu-row.id);
+                            menu.close();
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

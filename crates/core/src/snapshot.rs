@@ -15,6 +15,24 @@ pub struct Snapshot {
     /// Our own mute and deafen, which persist while we are not in voice.
     pub self_mute: bool,
     pub self_deaf: bool,
+    /// Friends in voice channels we can see, in sidebar order.
+    pub friends_in_voice: Vec<FriendInVoice>,
+    /// Our own user id and name, once known.
+    pub me: Option<(Id, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FriendInVoice {
+    pub user_id: Id,
+    pub name: String,
+    pub guild_id: Id,
+    pub guild_name: String,
+    pub channel_id: Id,
+    pub channel_name: String,
+    pub can_connect: bool,
+    pub self_mute: bool,
+    pub self_deaf: bool,
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -53,6 +71,13 @@ pub struct ChannelView {
     pub participants: Vec<Participant>,
 }
 
+impl GuildView {
+    /// How many people are in this guild's voice channels.
+    pub fn voice_count(&self) -> usize {
+        self.channels.iter().map(|channel| channel.participants.len()).sum()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Participant {
     pub user_id: Id,
@@ -64,6 +89,7 @@ pub struct Participant {
     pub streaming: bool,
     pub video: bool,
     pub is_me: bool,
+    pub is_friend: bool,
     /// Moderation actions we may take on this participant.
     pub moderation: Moderation,
 }
@@ -94,7 +120,7 @@ impl Moderation {
 impl Snapshot {
     pub fn build(store: &Store) -> Self {
         let Some(me) = &store.me else { return Self::default() };
-        let guilds = store
+        let guilds: Vec<GuildView> = store
             .guild_order
             .iter()
             .filter_map(|id| store.guilds.get(id))
@@ -108,8 +134,37 @@ impl Snapshot {
                 })
             })
             .collect();
-        Self { guilds, ..Self::default() }
+        let friends_in_voice = friends_in_voice(store, &guilds);
+        Self {
+            guilds,
+            friends_in_voice,
+            me: Some((me.id, me.display_name().to_owned())),
+            ..Self::default()
+        }
     }
+}
+
+fn friends_in_voice(store: &Store, guilds: &[GuildView]) -> Vec<FriendInVoice> {
+    let mut friends = Vec::new();
+    for guild in guilds {
+        for channel in &guild.channels {
+            for participant in channel.participants.iter().filter(|p| p.is_friend) {
+                friends.push(FriendInVoice {
+                    user_id: participant.user_id,
+                    name: store.friend_name(participant.user_id).unwrap_or_else(|| participant.name.clone()),
+                    guild_id: guild.id,
+                    guild_name: guild.name.clone(),
+                    channel_id: channel.id,
+                    channel_name: channel.name.clone(),
+                    can_connect: channel.can_connect,
+                    self_mute: participant.self_mute,
+                    self_deaf: participant.self_deaf,
+                    streaming: participant.streaming,
+                });
+            }
+        }
+    }
+    friends
 }
 
 fn voice_channels(store: &Store, guild: &Guild, me: Id) -> Vec<ChannelView> {
@@ -150,6 +205,7 @@ fn voice_channels(store: &Store, guild: &Guild, me: Id) -> Vec<ChannelView> {
                     streaming: state.self_stream,
                     video: state.self_video,
                     is_me: state.user_id == me,
+                    is_friend: store.friends.contains_key(&state.user_id),
                     moderation,
                 })
                 .collect();
@@ -254,7 +310,8 @@ mod tests {
 
     #[test]
     fn reports_voice_users_without_member_data() {
-        assert_eq!(store().unresolved_voice_users(), vec![(GUILD, vec![Id(3)])]);
+        assert_eq!(store().unresolved_voice_users(|_| true), vec![(GUILD, vec![Id(3)])]);
+        assert!(store().unresolved_voice_users(|_| false).is_empty());
     }
 
     #[test]
@@ -265,6 +322,24 @@ mod tests {
         let snapshot = Snapshot::build(&store);
         let channel = snapshot.guilds[0].channels.iter().find(|c| c.id == Id(21)).unwrap();
         assert_eq!(channel.participants.len(), 1);
+    }
+
+    #[test]
+    fn lists_friends_in_voice_with_our_nickname() {
+        let mut store = store();
+        let added = r#"{"id": "2", "type": 1, "nickname": "Bro"}"#;
+        store.apply(Event::RelationshipAdd(serde_json::from_str(added).unwrap()));
+        let pending = r#"{"id": "3", "type": 3}"#;
+        store.apply(Event::RelationshipAdd(serde_json::from_str(pending).unwrap()));
+
+        let snapshot = Snapshot::build(&store);
+        let friends: Vec<(&str, &str)> =
+            snapshot.friends_in_voice.iter().map(|f| (f.name.as_str(), f.channel_name.as_str())).collect();
+        assert_eq!(friends, [("Bro", "in-b")]);
+        assert!(participant(&snapshot, Id(21), Id(2)).is_friend);
+
+        store.apply(Event::RelationshipRemove(serde_json::from_str(r#"{"id": "2", "type": 1}"#).unwrap()));
+        assert!(Snapshot::build(&store).friends_in_voice.is_empty());
     }
 
     fn participant(snapshot: &Snapshot, channel: Id, user: Id) -> Participant {

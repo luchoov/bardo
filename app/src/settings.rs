@@ -1,6 +1,10 @@
 //! Settings that stay on this device, stored as JSON in `%APPDATA%\bardo\settings.json`.
 
-use std::{collections::BTreeMap, fs, io, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs, io,
+    path::PathBuf,
+};
 
 use bardo_core::{DEFAULT_THRESHOLD_DB, Id};
 use serde::{Deserialize, Serialize};
@@ -24,6 +28,40 @@ pub struct Settings {
     pub hotkeys: HotkeySettings,
     #[serde(default)]
     pub window: WindowSettings,
+    #[serde(default)]
+    pub servers: ServerSettings,
+    /// Changes are kept in memory only (the demo).
+    #[serde(skip)]
+    pub ephemeral: bool,
+}
+
+/// Which servers are listed in full, and how.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerSettings {
+    /// In the order they were pinned.
+    pub pinned: Vec<Id>,
+    /// Servers whose empty voice channels are listed too.
+    pub show_empty: BTreeSet<Id>,
+}
+
+impl ServerSettings {
+    pub fn is_pinned(&self, guild_id: Id) -> bool {
+        self.pinned.contains(&guild_id)
+    }
+
+    pub fn set_pinned(&mut self, guild_id: Id, pinned: bool) {
+        self.pinned.retain(|&id| id != guild_id);
+        if pinned {
+            self.pinned.push(guild_id);
+        }
+    }
+
+    pub fn toggle_show_empty(&mut self, guild_id: Id) {
+        if !self.show_empty.remove(&guild_id) {
+            self.show_empty.insert(guild_id);
+        }
+    }
 }
 
 /// Global hotkeys besides push-to-talk, which lives in [`VoiceSettings`].
@@ -122,6 +160,9 @@ impl Settings {
     }
 
     pub fn save(&self) {
+        if self.ephemeral {
+            return;
+        }
         let Some(path) = path() else { return };
         let result = path
             .parent()
@@ -184,6 +225,18 @@ mod tests {
         assert_eq!(settings.voice.input_gain(), 1.0);
         assert!(settings.window.close_to_tray);
         assert_eq!(settings.hotkeys, HotkeySettings::default());
+    }
+
+    #[test]
+    fn pinning_keeps_the_order_and_no_duplicates() {
+        let mut servers = ServerSettings::default();
+        servers.set_pinned(Id(2), true);
+        servers.set_pinned(Id(1), true);
+        servers.set_pinned(Id(2), true);
+        assert_eq!(servers.pinned, [Id(1), Id(2)]);
+        servers.set_pinned(Id(1), false);
+        assert_eq!(servers.pinned, [Id(2)]);
+        assert!(servers.is_pinned(Id(2)));
     }
 
     #[test]

@@ -6,14 +6,17 @@ Playing CS2 (or anything else) and only need your squad in your ears? bardo does
 No Electron, no embedded browser, no chat, no feeds — a small native Rust binary for Windows 11 that stays
 out of the way of your game's frame time and memory.
 
-- Join voice channels, see who is in them and who is talking.
-- Push-to-talk on a global hotkey, or voice activation.
-- Server mute, deafen, move and disconnect from a right-click menu, for server admins.
+- See where your friends are talking, across all your servers, and join them in one click.
+- Pin the servers you use; the rest stay folded away, and so do empty channels. Ctrl+K searches
+  every channel and everyone in voice.
+- Push-to-talk, or voice activity with noise suppression and automatic gain control.
+- Global hotkeys for mute and deafen that do not take the keys away from the game.
+- Per-user volume (0–200 %) and local mute; server mute, deafen, move and disconnect for admins.
+- Lives in the tray and can start with Windows.
 - Runs alongside the official client: keep Discord closed while you play, or use it for text.
 
-> **Status:** early development. The live server and voice channel list and the moderation menu work.
-> Voice (joining, listening, talking with push-to-talk or voice activity) is implemented but not yet
-> verified against Discord.
+> **Status:** early development. Server voice works end to end (with DAVE): joining, listening,
+> talking, moderation. DM and group calls are next.
 
 > **Disclaimer:** bardo is not affiliated with or endorsed by Discord. Using a user account from an
 > unofficial client is against Discord's Terms of Service and may get the account banned. Use at your own risk.
@@ -31,7 +34,7 @@ out of the way of your game's frame time and memory.
 - Context menu on a user:
   - Local: volume 0–200 %, local mute.
   - Moderation (based on effective permissions): server mute, server deafen, move to ▸, disconnect.
-- System tray.
+- System tray, global mute/deafen hotkeys, start with Windows.
 
 **Out of scope**: text, video, screen share / Go Live, soundboard (the event is never handled, so it never plays), Stage.
 No echo cancellation: headphones are assumed.
@@ -60,6 +63,7 @@ crates/
   audio/    WASAPI capture/playback, mixing, per-user volume, RNNoise, VAD
   core/     State + effective permissions + orchestration; command/event API for the UI
 app/        Slint binary: view, global hotkeys, tray
+tools/      make_icon.py draws the icon
 ```
 
 Threads: a tokio runtime for networking, dedicated real-time threads for audio, the Slint event loop on the main thread; channels in between.
@@ -67,14 +71,12 @@ Threads: a tokio runtime for networking, dedicated real-time threads for audio, 
 ## Roadmap
 
 1. Gateway: servers and voice channels with who is in each, live. *(done)*
-2. Moderation: context menu (mute/deafen/move/disconnect). Useful without audio. *(done; local volume and
-   mute are stored and take effect once audio lands)*
-3. Voice — receive: join and listen (validates DAVE). *(implemented: click a channel to join; needs a live
-   test)*
-4. Voice — send: microphone, PTT, VAD. *(implemented: device selection, push-to-talk key, voice
-   activity threshold with a level meter; needs a live test)*
+2. Moderation: context menu (mute/deafen/move/disconnect). *(done)*
+3. Voice — receive: join and listen (validates DAVE). *(done)*
+4. Voice — send: microphone, PTT, VAD, input gain. *(done)*
 5. DM / group calls.
-6. Polish: tray, global mute/deafen hotkeys. *(done early: RNNoise, per-user volume, deafened icon)*
+6. Polish: tray, global hotkeys, own UI components, friends in voice, pinned servers, search. *(done)*
+7. Release build and installer; memory and CPU numbers against the official client.
 
 ## Build
 
@@ -102,11 +104,15 @@ The token grants full access to the account: never share it or commit it.
 | `BARDO_TOKEN` | Use this token instead of the stored one. |
 | `BARDO_DUMP_DIR` | Write raw `READY`, `READY_SUPPLEMENTAL` and unparseable dispatches to this directory. They contain account data: keep the directory outside the repo. |
 | `RUST_LOG` | Log filter, e.g. `info,bardo_gateway=debug`. Debug builds log to the console. `songbird=debug` shows the voice handshake. |
-| `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account. |
+| `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account (`login` shows the sign-in screen). Nothing is saved. |
 
-Voice settings, per-user volume and local mutes are stored in `%APPDATA%\bardo\settings.json`.
+Settings (voice, hotkeys, pinned servers, per-user volume and local mutes) are stored in
+`%APPDATA%\bardo\settings.json`.
 
-The push-to-talk key is read by polling the keyboard state, so the key still reaches the game.
+Hotkeys are read by polling the keyboard state, so the keys still reach the game.
+
+Member data (names) is only requested for the servers on screen, so big public servers cost nothing
+while they are folded away.
 
 ## References
 

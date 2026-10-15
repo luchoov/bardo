@@ -1,0 +1,61 @@
+// bardo's look: near-black surfaces, white as the accent, color only where it means something
+// (green for speaking, red for muted or destructive, amber for in-progress).
+
+export global Theme {
+    out property <color> bg: #0e0e10;
+    // Header and footer bands.
+    out property <color> panel: #131315;
+    // Menus, popovers and cards.
+    out property <color> surface: #19191c;
+    // Inputs and controls.
+    out property <color> raised: #202024;
+    out property <color> raised-hover: #27272c;
+    // Row hover on the background, and selection.
+    out property <color> hover: #18181b;
+    out property <color> active: #222226;
+    out property <color> border: #232327;
+    out property <color> border-strong: #303036;
+    out property <color> focus: #5a5a64;
+    out property <color> text: #ededef;
+    out property <color> text-2: #a1a1aa;
+    out property <color> text-3: #6b6b74;
+    out property <color> track: #2a2a2f;
+    out property <color> avatar: #26262b;
+    out property <color> ok: #3ecf8e;
+    out property <color> danger: #f0565b;
+    out property <color> warn: #e2b04a;
+    out property <color> scrim: #000000a6;
+    out property <color> shadow: #000000b3;
+    out property <string> font: "Segoe UI Variable Text";
+    out property <string> icon-font: "Segoe Fluent Icons";
+    out property <duration> fast: 90ms;
+    out property <duration> medium: 160ms;
+}
+
+// Segoe Fluent Icons code points.
+export global Glyph {
+    out property <string> chevron-down: "\u{E70D}";
+    out property <string> chevron-right: "\u{E76C}";
+    out property <string> back: "\u{E72B}";
+    out property <string> speaker: "\u{E767}";
+    out property <string> speaker-off: "\u{E74F}";
+    out property <string> mic: "\u{E720}";
+    out property <string> mic-off: "\u{EC54}";
+    out property <string> headphones: "\u{E7F6}";
+    out property <string> hang-up: "\u{E778}";
+    out property <string> settings: "\u{E713}";
+    out property <string> search: "\u{E721}";
+    out property <string> pin: "\u{E718}";
+    out property <string> unpin: "\u{E77A}";
+    out property <string> pinned: "\u{E840}";
+    out property <string> people: "\u{E716}";
+    out property <string> check: "\u{E73E}";
+    out property <string> clear: "\u{E894}";
+    out property <string> keyboard: "\u{E92E}";
+    out property <string> move: "\u{E8AB}";
+    out property <string> sign-out: "\u{F3B1}";
+    out property <string> join: "\u{E8A7}";
+    out property <string> eye: "\u{E7B3}";
+    out property <string> hide: "\u{ED1A}";
+    out property <string> collapse: "\u{E70E}";
+}

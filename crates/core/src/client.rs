@@ -51,6 +51,9 @@ pub enum Command {
     /// How a user sounds to us.
     SetUserAudio { user_id: Id, audio: UserAudio },
     SetAudioDevices(AudioDevices),
+    /// The guilds being shown in full. Missing member data (names) is only fetched for these and
+    /// for the guild we are in voice in, so big public servers cost nothing while hidden.
+    SetWatchedGuilds(HashSet<Id>),
 }
 
 /// Results of background work, reported back to the client task.
@@ -224,6 +227,7 @@ struct Session {
     /// READY_SUPPLEMENTAL carries the members of everyone in voice; wait for it before asking for more.
     supplemental_received: bool,
     requested_members: HashSet<(Id, Id)>,
+    watched_guilds: HashSet<Id>,
 }
 
 impl Session {
@@ -237,6 +241,7 @@ impl Session {
             transmitting: false,
             supplemental_received: false,
             requested_members: HashSet::new(),
+            watched_guilds: HashSet::new(),
         }
     }
 
@@ -360,6 +365,11 @@ impl Session {
                 self.driver.set_devices(devices, self.store.me.as_ref().map(|me| me.id));
                 return;
             }
+            Command::SetWatchedGuilds(guilds) => {
+                self.watched_guilds = guilds;
+                self.request_unresolved_members(gateway);
+                return;
+            }
         };
         if self.settle_voice(outcome, gateway, on_event) {
             self.publish(on_event);
@@ -392,7 +402,9 @@ impl Session {
         if !self.supplemental_received {
             return;
         }
-        for (guild_id, users) in self.store.unresolved_voice_users() {
+        let in_voice = self.voice.view(&self.store).map(|voice| voice.guild_id);
+        let wanted = |guild_id| self.watched_guilds.contains(&guild_id) || in_voice == Some(guild_id);
+        for (guild_id, users) in self.store.unresolved_voice_users(wanted) {
             let users: Vec<Id> = users
                 .into_iter()
                 .filter(|&user_id| self.requested_members.insert((guild_id, user_id)))

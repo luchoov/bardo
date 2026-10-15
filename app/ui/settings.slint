@@ -1,0 +1,352 @@
+// The settings page: voice, hotkeys, window and account.
+
+import { Theme, Glyph } from "theme.slint";
+import {
+    Button, ButtonKind, Caption, IconButton, KeyField, ScrollArea, Segmented, Select, SettingRow, Slider, Toggle,
+} from "controls.slint";
+
+export struct SettingsView {
+    inputs: [string],
+    outputs: [string],
+    input-index: int,
+    output-index: int,
+    push-to-talk: bool,
+    // Key caps of each hotkey, e.g. ["Ctrl", "M"].
+    ptt-keys: [string],
+    mute-keys: [string],
+    deafen-keys: [string],
+    // The hotkey being recorded: -1 none, 0 push-to-talk, 1 mute, 2 deafen.
+    capturing: int,
+    noise-suppression: bool,
+    auto-gain: bool,
+    autostart: bool,
+    close-to-tray: bool,
+    account: string,
+    version: string,
+}
+
+// Settings state and what the page asks of the app.
+export global SettingsUi {
+    in property <SettingsView> view;
+    in-out property <float> threshold;
+    // Microphone volume in percent.
+    in-out property <float> input-volume;
+    // Input level in dBFS, refreshed while the page is open.
+    in property <float> level;
+    in property <bool> in-voice;
+    callback close();
+    callback select-input(int);
+    callback select-output(int);
+    callback set-push-to-talk(bool);
+    callback capture-key(int);
+    callback clear-key(int);
+    callback set-threshold(float);
+    callback set-input-volume(float);
+    callback set-noise-suppression(bool);
+    callback set-auto-gain(bool);
+    callback set-autostart(bool);
+    callback set-close-to-tray(bool);
+    callback sign-out();
+}
+
+component Section inherits VerticalLayout {
+    in property <string> title;
+    spacing: 14px;
+    padding-top: 18px;
+    padding-bottom: 6px;
+    Caption { text: root.title; }
+    @children
+}
+
+component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.border;
+}
+
+// The input level against the voice activity threshold.
+component LevelMeter inherits Rectangle {
+    in property <float> level;
+    in property <float> threshold;
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.track;
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp((root.level + 100) / 100, 0, 1);
+        border-radius: 3px;
+        background: root.level >= root.threshold ? Theme.ok : Theme.text-3;
+        animate width { duration: 50ms; }
+    }
+    Rectangle {
+        x: parent.width * clamp((root.threshold + 100) / 100, 0, 1) - 1px;
+        y: -2px;
+        width: 2px;
+        height: parent.height + 4px;
+        border-radius: 1px;
+        background: Theme.text;
+    }
+}
+
+export component SettingsPage inherits Rectangle {
+    background: Theme.bg;
+    // Swallows clicks so nothing underneath reacts.
+    TouchArea { }
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            background: Theme.panel;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 12px;
+                spacing: 6px;
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        glyph: Glyph.back;
+                        glyph-size: 13px;
+                        clicked => { SettingsUi.close(); }
+                    }
+                }
+                Text {
+                    text: "Settings";
+                    color: Theme.text;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+        scroll := ScrollArea {
+            vertical-stretch: 1;
+            content-height: page.preferred-height;
+            page := VerticalLayout {
+                width: scroll.width;
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-bottom: 24px;
+                spacing: 8px;
+
+                Section {
+                    title: "INPUT";
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Microphone";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                        }
+                        Select {
+                            options: SettingsUi.view.inputs;
+                            selected: SettingsUi.view.input-index;
+                            select(index) => { SettingsUi.select-input(index); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            Text {
+                                text: "Input volume";
+                                color: Theme.text-2;
+                                font-size: 12px;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: round(SettingsUi.input-volume) + "%";
+                                color: Theme.text;
+                                font-size: 12px;
+                            }
+                        }
+                        Slider {
+                            minimum: 0;
+                            maximum: 200;
+                            step: 5;
+                            mark: 100;
+                            value <=> SettingsUi.input-volume;
+                            changed(value) => { SettingsUi.set-input-volume(value); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Automatic gain control";
+                        description: "Keeps your voice at a steady level, like Discord does.";
+                        Toggle {
+                            checked: SettingsUi.view.auto-gain;
+                            toggled(on) => { SettingsUi.set-auto-gain(on); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Noise suppression";
+                        description: "Filters out fans, keyboards and background noise.";
+                        Toggle {
+                            checked: SettingsUi.view.noise-suppression;
+                            toggled(on) => { SettingsUi.set-noise-suppression(on); }
+                        }
+                    }
+                }
+                Divider { }
+
+                Section {
+                    title: "TRANSMIT";
+                    Segmented {
+                        options: ["Voice activity", "Push to talk"];
+                        selected: SettingsUi.view.push-to-talk ? 1 : 0;
+                        select(index) => { SettingsUi.set-push-to-talk(index == 1); }
+                    }
+                    if SettingsUi.view.push-to-talk: VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Push-to-talk key";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                        }
+                        KeyField {
+                            keys: SettingsUi.view.ptt-keys;
+                            capturing: SettingsUi.view.capturing == 0;
+                            busy: SettingsUi.view.capturing >= 0 && SettingsUi.view.capturing != 0;
+                            capture => { SettingsUi.capture-key(0); }
+                            clear => { SettingsUi.clear-key(0); }
+                        }
+                    }
+                    if !SettingsUi.view.push-to-talk: VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            Text {
+                                text: "Sensitivity";
+                                color: Theme.text-2;
+                                font-size: 12px;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: round(SettingsUi.threshold) + " dB";
+                                color: Theme.text;
+                                font-size: 12px;
+                            }
+                        }
+                        LevelMeter {
+                            level: SettingsUi.level;
+                            threshold: SettingsUi.threshold;
+                        }
+                        Slider {
+                            minimum: -100;
+                            maximum: 0;
+                            value <=> SettingsUi.threshold;
+                            changed(value) => { SettingsUi.set-threshold(value); }
+                        }
+                        Text {
+                            text: SettingsUi.in-voice
+                                ? "You transmit while the bar is green."
+                                : "Join a voice channel to see your level.";
+                            color: Theme.text-3;
+                            font-size: 11.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                Divider { }
+
+                Section {
+                    title: "OUTPUT";
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Speakers or headphones";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                        }
+                        Select {
+                            options: SettingsUi.view.outputs;
+                            selected: SettingsUi.view.output-index;
+                            select(index) => { SettingsUi.select-output(index); }
+                        }
+                    }
+                }
+                Divider { }
+
+                Section {
+                    title: "HOTKEYS";
+                    Text {
+                        text: "They work while you play; the game still gets the keys.";
+                        color: Theme.text-3;
+                        font-size: 11.5px;
+                        wrap: word-wrap;
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Toggle mute";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                        }
+                        KeyField {
+                            keys: SettingsUi.view.mute-keys;
+                            capturing: SettingsUi.view.capturing == 1;
+                            busy: SettingsUi.view.capturing >= 0 && SettingsUi.view.capturing != 1;
+                            capture => { SettingsUi.capture-key(1); }
+                            clear => { SettingsUi.clear-key(1); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Toggle deafen";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                        }
+                        KeyField {
+                            keys: SettingsUi.view.deafen-keys;
+                            capturing: SettingsUi.view.capturing == 2;
+                            busy: SettingsUi.view.capturing >= 0 && SettingsUi.view.capturing != 2;
+                            capture => { SettingsUi.capture-key(2); }
+                            clear => { SettingsUi.clear-key(2); }
+                        }
+                    }
+                }
+                Divider { }
+
+                Section {
+                    title: "APP";
+                    SettingRow {
+                        title: "Start with Windows";
+                        description: "Starts hidden in the tray when you sign in.";
+                        Toggle {
+                            checked: SettingsUi.view.autostart;
+                            toggled(on) => { SettingsUi.set-autostart(on); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Keep running in the tray";
+                        description: "Closing the window hides bardo instead of quitting.";
+                        Toggle {
+                            checked: SettingsUi.view.close-to-tray;
+                            toggled(on) => { SettingsUi.set-close-to-tray(on); }
+                        }
+                    }
+                }
+                Divider { }
+
+                Section {
+                    title: "ACCOUNT";
+                    SettingRow {
+                        title: SettingsUi.view.account == "" ? "Signed in" : "Signed in as " + SettingsUi.view.account;
+                        description: "The token is kept in Windows Credential Manager.";
+                        Button {
+                            text: "Sign out";
+                            kind: ButtonKind.danger;
+                            clicked => { SettingsUi.sign-out(); }
+                        }
+                    }
+                }
+
+                Text {
+                    text: SettingsUi.view.version;
+                    color: Theme.text-3;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}

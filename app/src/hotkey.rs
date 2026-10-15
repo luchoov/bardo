@@ -62,15 +62,21 @@ impl Binding {
         is_down(self.key) && self.modifiers & !held_modifiers() == 0
     }
 
-    /// A readable name, e.g. "Ctrl + Shift + M" or "Mouse 4".
-    pub fn name(self) -> String {
+    /// The keys to press, modifiers first, e.g. ["Ctrl", "Shift", "M"] or ["Mouse 4"].
+    pub fn parts(self) -> Vec<String> {
         let mut parts: Vec<String> = [(CTRL, "Ctrl"), (SHIFT, "Shift"), (ALT, "Alt"), (WIN, "Win")]
             .into_iter()
             .filter(|&(bit, _)| self.modifiers & bit != 0)
             .map(|(_, name)| name.to_owned())
             .collect();
         parts.push(key_name(self.key));
-        parts.join(" + ")
+        parts
+    }
+
+    /// A readable name, e.g. "Ctrl + Shift + M".
+    #[cfg(test)]
+    fn name(self) -> String {
+        self.parts().join(" + ")
     }
 }
 

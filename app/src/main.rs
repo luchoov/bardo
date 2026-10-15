@@ -5,6 +5,7 @@ mod demo;
 mod hotkey;
 mod settings;
 mod token;
+mod view;
 mod win;
 
 use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Duration};
@@ -13,13 +14,14 @@ use bardo_core::{
     AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, SILENCE_DB,
     Snapshot, TransmitControl, UserAudio, VoiceStatus,
 };
-use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
     hotkey::{Action, Binding, Hotkeys},
     settings::{HotkeySettings, Settings, VoiceSettings},
+    view::{Context, ListState},
 };
 
 slint::include_modules!();
@@ -31,7 +33,7 @@ const NOTICE_DURATION: Duration = Duration::from_secs(8);
 /// How often the input level meter refreshes while the settings are open.
 const METER_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Which hotkey a key capture is for; the index is what the settings UI uses.
+/// Which hotkey a key capture is for; the index is what the settings page uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyTarget {
     PushToTalk = 0,
@@ -53,21 +55,25 @@ impl KeyTarget {
 /// UI-thread state.
 #[derive(Default)]
 struct App {
+    window: Option<slint::Weak<MainWindow>>,
     client: Option<Client>,
     /// Bumped on every connect and sign-out so events from a previous client are ignored.
     generation: u64,
+    connection: Option<ConnectionState>,
     snapshot: Arc<Snapshot>,
-    /// Users heard speaking in our voice channel.
+    /// Users heard speaking in our voice channel, and us while transmitting.
     speaking: HashSet<Id>,
     settings: Settings,
-    collapsed: HashSet<Id>,
+    list: ListState,
+    /// The guilds whose members the client fetches, as last sent.
+    watched: HashSet<Id>,
     rows: Rc<VecModel<Row>>,
     /// Bumped whenever a notice is shown, so an older notice's timer does not clear a newer one.
     notice_generation: u64,
     transmit: Arc<TransmitControl>,
     hotkeys: Option<Hotkeys>,
     tray: Option<BardoTray>,
-    /// Devices listed in the settings sheet, in its order (after "System default").
+    /// Devices listed in the settings, in their order (after "System default").
     inputs: Vec<AudioDevice>,
     outputs: Vec<AudioDevice>,
     capturing: Option<KeyTarget>,
@@ -102,6 +108,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     APP.with_borrow_mut(|app| {
+        app.window = Some(window.as_weak());
         app.settings = Settings::load();
         apply_voice_settings(&app.transmit, &app.settings.voice);
         let hotkeys = Hotkeys::start(app.transmit.clone(), |action| {
@@ -131,7 +138,6 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = slint::quit_event_loop();
     });
     APP.with_borrow_mut(|app| app.tray = Some(tray));
-    render_tray();
 
     window.window().on_close_requested(|| {
         if !APP.with_borrow(|app| app.settings.window.close_to_tray) {
@@ -140,214 +146,21 @@ fn main() -> Result<(), slint::PlatformError> {
         slint::CloseRequestResponse::HideWindow
     });
 
-    window.on_sign_in({
-        let weak = window.as_weak();
-        move |input| {
-            let Some(window) = weak.upgrade() else { return };
-            let Some(token) = token::normalize(&input) else {
-                window.set_login_error("That doesn't look like a token.".into());
-                return;
-            };
-            if let Err(e) = token::save(&token) {
-                window.set_login_error(format!("Could not store the token: {e}").into());
-                return;
-            }
-            connect(&window, token);
-        }
-    });
-
-    window.on_sign_out({
-        let weak = window.as_weak();
-        move || {
-            let Some(window) = weak.upgrade() else { return };
-            token::clear();
-            disconnect(&window, "");
-        }
-    });
-
-    window.on_toggle_guild(|id| {
-        let Some(id) = parse_id(&id) else { return };
-        APP.with_borrow_mut(|app| {
-            if !app.collapsed.remove(&id) {
-                app.collapsed.insert(id);
-            }
-        });
-        render();
-    });
-
-    window.on_dismiss_notice({
-        let weak = window.as_weak();
-        move || {
-            if let Some(window) = weak.upgrade() {
-                window.set_notice("".into());
-            }
-        }
-    });
-
-    window.on_set_server_mute(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerMute(on)));
-    window.on_set_server_deafen(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerDeafen(on)));
-    window.on_move_member(|guild, user, channel| {
-        if let Some(channel) = parse_id(&channel) {
-            modify_member(&guild, &user, MemberChange::Move(Some(channel)));
-        }
-    });
-    window.on_disconnect_member(|guild, user| modify_member(&guild, &user, MemberChange::Move(None)));
-
-    window.on_set_local_mute(|user, muted| {
-        update_user_audio(&user, |audio| audio.muted = muted);
-    });
-
-    window.on_edit_volume({
-        let weak = window.as_weak();
-        move |user, name| {
-            let (Some(window), Some(user_id)) = (weak.upgrade(), parse_id(&user)) else { return };
-            let volume = APP.with_borrow(|app| app.settings.user(user_id).volume);
-            window.set_volume_value(f32::from(volume));
-            window.set_volume_name(name);
-            window.set_volume_user(user);
-        }
-    });
-
-    window.on_set_volume(|user, volume| {
-        let volume = u16::try_from(volume).unwrap_or_default();
-        update_user_audio(&user, |audio| audio.volume = volume);
-    });
-
-    window.on_join_channel(|guild, channel| {
-        if let (Some(guild_id), Some(channel_id)) = (parse_id(&guild), parse_id(&channel)) {
-            send(Command::JoinVoice { guild_id, channel_id });
-        }
-    });
-    window.on_leave_voice(|| send(Command::LeaveVoice));
-    window.on_toggle_mute(toggle_mute);
-    window.on_toggle_deafen(toggle_deafen);
-
-    window.on_open_settings({
-        let weak = window.as_weak();
-        move || {
-            let Some(window) = weak.upgrade() else { return };
-            APP.with_borrow_mut(|app| {
-                app.inputs = bardo_core::input_devices();
-                app.outputs = bardo_core::output_devices();
-                window.set_threshold(app.settings.voice.threshold_db);
-                window.set_input_volume(f32::from(app.settings.voice.input_volume));
-            });
-            render_settings(&window);
-            window.set_settings_open(true);
-            let weak = window.as_weak();
-            APP.with_borrow(|app| {
-                app.meter.start(slint::TimerMode::Repeated, METER_INTERVAL, move || {
-                    let Some(window) = weak.upgrade() else { return };
-                    let level = APP.with_borrow(|app| {
-                        if app.snapshot.voice.is_some() { app.transmit.level_db() } else { SILENCE_DB }
-                    });
-                    window.set_input_level(level);
-                });
-            });
-        }
-    });
-    window.on_close_settings({
-        let weak = window.as_weak();
-        move || {
-            APP.with_borrow(|app| app.meter.stop());
-            if let Some(window) = weak.upgrade() {
-                window.set_settings_open(false);
-            }
-        }
-    });
-    window.on_select_input(|index| {
-        update_voice_settings(|voice, app| voice.input_device = device_at(&app.inputs, index));
-        send_devices();
-    });
-    window.on_select_output(|index| {
-        update_voice_settings(|voice, app| voice.output_device = device_at(&app.outputs, index));
-        send_devices();
-    });
-    window.on_set_push_to_talk({
-        let weak = window.as_weak();
-        move |enabled| {
-            update_voice_settings(|voice, _| voice.push_to_talk = enabled);
-            if let Some(window) = weak.upgrade() {
-                render_settings(&window);
-            }
-        }
-    });
-    window.on_set_threshold(|threshold| update_voice_settings(|voice, _| voice.threshold_db = threshold));
-    window.on_set_noise_suppression(|enabled| update_voice_settings(|voice, _| voice.noise_suppression = enabled));
-    window.on_set_input_volume(|volume| {
-        let volume = volume.round().clamp(0.0, f32::from(settings::MAX_INPUT_VOLUME)) as u16;
-        update_voice_settings(|voice, _| voice.input_volume = volume);
-    });
-    window.on_set_auto_gain(|enabled| update_voice_settings(|voice, _| voice.auto_gain = enabled));
-    window.on_capture_key({
-        let weak = window.as_weak();
-        move |target| {
-            let (Some(window), Some(target)) = (weak.upgrade(), KeyTarget::from_index(target)) else { return };
-            APP.with_borrow_mut(|app| app.capturing = Some(target));
-            render_settings(&window);
-            let weak = window.as_weak();
-            APP.with_borrow(|app| {
-                let Some(hotkeys) = &app.hotkeys else { return };
-                hotkeys.capture_next(move |binding| {
-                    let _ = slint::invoke_from_event_loop(move || {
-                        APP.with_borrow_mut(|app| app.capturing = None);
-                        if binding.is_some() {
-                            set_binding(target, binding);
-                        }
-                        if let Some(window) = weak.upgrade() {
-                            render_settings(&window);
-                        }
-                    });
-                });
-            });
-        }
-    });
-    window.on_clear_key({
-        let weak = window.as_weak();
-        move |target| {
-            let Some(target) = KeyTarget::from_index(target) else { return };
-            set_binding(target, None);
-            if let Some(window) = weak.upgrade() {
-                render_settings(&window);
-            }
-        }
-    });
-    window.on_set_autostart({
-        let weak = window.as_weak();
-        move |enabled| {
-            win::set_autostart(enabled);
-            if let Some(window) = weak.upgrade() {
-                render_settings(&window);
-            }
-        }
-    });
-    window.on_set_close_to_tray(|enabled| {
-        APP.with_borrow_mut(|app| {
-            app.settings.window.close_to_tray = enabled;
-            app.settings.save();
-        });
-    });
-
-    window.on_close_volume({
-        let weak = window.as_weak();
-        move || {
-            if let Some(window) = weak.upgrade() {
-                window.set_volume_user("".into());
-            }
-        }
-    });
+    wire_main(&window);
+    wire_list(&window);
+    wire_settings(&window);
 
     #[cfg(debug_assertions)]
     if demo::enabled() {
-        window.set_screen(SCREEN_MAIN);
-        window.set_connected(true);
-        window.set_status("Demo".into());
+        window.set_screen(if demo::login() { SCREEN_LOGIN } else { SCREEN_MAIN });
         APP.with_borrow_mut(|app| {
+            app.connection = Some(ConnectionState::Connected);
             app.snapshot = Arc::new(demo::snapshot());
             app.speaking = demo::speaking();
+            app.settings.ephemeral = true;
+            app.settings.servers.pinned = demo::pinned();
         });
-        render();
-        render_voice_bar(&window);
+        render_all();
     } else {
         start(&window);
     }
@@ -382,34 +195,235 @@ fn show_window(window: &MainWindow) {
     win::bring_to_front(window.window());
 }
 
-fn toggle_mute() {
-    let (mute, deaf) = APP.with_borrow(|app| (app.snapshot.self_mute, app.snapshot.self_deaf));
-    // Like the official client: unmuting while deafened also undeafens.
-    if deaf {
-        send(Command::SetSelfDeaf(false));
-        send(Command::SetSelfMute(false));
-    } else {
-        send(Command::SetSelfMute(!mute));
-    }
+/// Sign-in, the header, the footer and notices.
+fn wire_main(window: &MainWindow) {
+    window.on_sign_in({
+        let weak = window.as_weak();
+        move |input| {
+            let Some(window) = weak.upgrade() else { return };
+            if APP.with_borrow(|app| app.settings.ephemeral) {
+                window.set_login_error("This is the demo: nothing is stored.".into());
+                return;
+            }
+            let Some(token) = token::normalize(&input) else {
+                window.set_login_error("That doesn't look like a token.".into());
+                return;
+            };
+            if let Err(e) = token::save(&token) {
+                window.set_login_error(format!("Could not store the token: {e}").into());
+                return;
+            }
+            connect(&window, token);
+        }
+    });
+
+    window.on_dismiss_notice({
+        let weak = window.as_weak();
+        move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_notice("".into());
+            }
+        }
+    });
+
+    window.on_toggle_mute(toggle_mute);
+    window.on_toggle_deafen(toggle_deafen);
+
+    window.on_search_edited(|query| {
+        APP.with_borrow_mut(|app| app.list.query = query.to_string());
+        render();
+    });
+    window.on_search_accepted(|| {
+        let first = APP.with_borrow(|app| view::first_result(&app.rows.iter().collect::<Vec<_>>()));
+        if let Some((guild, channel)) = first {
+            join(&guild, &channel);
+        }
+    });
 }
 
-fn toggle_deafen() {
-    let deaf = APP.with_borrow(|app| app.snapshot.self_deaf);
-    send(Command::SetSelfDeaf(!deaf));
+/// The list's rows and menus.
+fn wire_list(window: &MainWindow) {
+    let api = window.global::<Api>();
+    api.on_toggle_section(|key| {
+        APP.with_borrow_mut(|app| match key.as_str() {
+            view::SECTION_FRIENDS => app.list.friends_collapsed = !app.list.friends_collapsed,
+            view::SECTION_OTHER => app.list.other_open = Some(!app.list.other_open(&app.settings)),
+            _ => {}
+        });
+        render();
+    });
+    api.on_toggle_guild(|guild| {
+        let Some(guild_id) = parse_id(&guild) else { return };
+        APP.with_borrow_mut(|app| {
+            let in_main = app.settings.servers.is_pinned(guild_id)
+                || app.snapshot.voice.as_ref().is_some_and(|voice| voice.guild_id == guild_id);
+            let set = if in_main { &mut app.list.collapsed } else { &mut app.list.expanded };
+            if !set.remove(&guild_id) {
+                set.insert(guild_id);
+            }
+        });
+        render();
+    });
+    api.on_toggle_empty(|guild| {
+        let Some(guild_id) = parse_id(&guild) else { return };
+        update_settings(|settings| settings.servers.toggle_show_empty(guild_id));
+        render();
+    });
+    api.on_pin_guild(|guild, pinned| {
+        let Some(guild_id) = parse_id(&guild) else { return };
+        APP.with_borrow_mut(|app| {
+            // A newly pinned server shows up expanded.
+            app.list.collapsed.remove(&guild_id);
+            app.list.expanded.remove(&guild_id);
+        });
+        update_settings(|settings| settings.servers.set_pinned(guild_id, pinned));
+        render();
+    });
+    api.on_join_channel(|guild, channel| join(&guild, &channel));
+    api.on_leave_voice(|| send(Command::LeaveVoice));
+    api.on_set_server_mute(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerMute(on)));
+    api.on_set_server_deafen(|guild, user, on| modify_member(&guild, &user, MemberChange::ServerDeafen(on)));
+    api.on_move_member(|guild, user, channel| {
+        if let Some(channel) = parse_id(&channel) {
+            modify_member(&guild, &user, MemberChange::Move(Some(channel)));
+        }
+    });
+    api.on_disconnect_member(|guild, user| modify_member(&guild, &user, MemberChange::Move(None)));
+    api.on_set_local_mute(|user, muted| update_user_audio(&user, |audio| audio.muted = muted));
+    api.on_set_volume(|user, volume| {
+        let volume = u16::try_from(volume).unwrap_or_default();
+        update_user_audio(&user, |audio| audio.volume = volume);
+    });
+}
+
+fn wire_settings(window: &MainWindow) {
+    window.on_open_settings({
+        let weak = window.as_weak();
+        move || {
+            let Some(window) = weak.upgrade() else { return };
+            let ui = window.global::<SettingsUi>();
+            APP.with_borrow_mut(|app| {
+                app.inputs = bardo_core::input_devices();
+                app.outputs = bardo_core::output_devices();
+                ui.set_threshold(app.settings.voice.threshold_db);
+                ui.set_input_volume(f32::from(app.settings.voice.input_volume));
+            });
+            render_settings(&window);
+            window.set_settings_open(true);
+            let weak = window.as_weak();
+            APP.with_borrow(|app| {
+                app.meter.start(slint::TimerMode::Repeated, METER_INTERVAL, move || {
+                    let Some(window) = weak.upgrade() else { return };
+                    let (level, in_voice) = APP.with_borrow(|app| {
+                        let in_voice = app.snapshot.voice.is_some();
+                        (if in_voice { app.transmit.level_db() } else { SILENCE_DB }, in_voice)
+                    });
+                    let ui = window.global::<SettingsUi>();
+                    ui.set_level(level);
+                    ui.set_in_voice(in_voice);
+                });
+            });
+        }
+    });
+
+    let ui = window.global::<SettingsUi>();
+    ui.on_close({
+        let weak = window.as_weak();
+        move || {
+            APP.with_borrow(|app| app.meter.stop());
+            if let Some(window) = weak.upgrade() {
+                window.set_settings_open(false);
+            }
+        }
+    });
+    ui.on_select_input(|index| {
+        update_voice_settings(|voice, app| voice.input_device = device_at(&app.inputs, index));
+        send_devices();
+        render_settings_now();
+    });
+    ui.on_select_output(|index| {
+        update_voice_settings(|voice, app| voice.output_device = device_at(&app.outputs, index));
+        send_devices();
+        render_settings_now();
+    });
+    ui.on_set_push_to_talk(|enabled| {
+        update_voice_settings(|voice, _| voice.push_to_talk = enabled);
+        render_settings_now();
+    });
+    ui.on_set_threshold(|threshold| update_voice_settings(|voice, _| voice.threshold_db = threshold));
+    ui.on_set_input_volume(|volume| {
+        let volume = volume.round().clamp(0.0, f32::from(settings::MAX_INPUT_VOLUME)) as u16;
+        update_voice_settings(|voice, _| voice.input_volume = volume);
+    });
+    ui.on_set_noise_suppression(|enabled| {
+        update_voice_settings(|voice, _| voice.noise_suppression = enabled);
+        render_settings_now();
+    });
+    ui.on_set_auto_gain(|enabled| {
+        update_voice_settings(|voice, _| voice.auto_gain = enabled);
+        render_settings_now();
+    });
+    ui.on_capture_key(|target| {
+        let Some(target) = KeyTarget::from_index(target) else { return };
+        APP.with_borrow_mut(|app| app.capturing = Some(target));
+        render_settings_now();
+        APP.with_borrow(|app| {
+            let Some(hotkeys) = &app.hotkeys else { return };
+            hotkeys.capture_next(move |binding| {
+                let _ = slint::invoke_from_event_loop(move || {
+                    APP.with_borrow_mut(|app| app.capturing = None);
+                    if binding.is_some() {
+                        set_binding(target, binding);
+                    }
+                    render_settings_now();
+                });
+            });
+        });
+    });
+    ui.on_clear_key(|target| {
+        let Some(target) = KeyTarget::from_index(target) else { return };
+        set_binding(target, None);
+        render_settings_now();
+    });
+    ui.on_set_autostart(|enabled| {
+        win::set_autostart(enabled);
+        render_settings_now();
+    });
+    ui.on_set_close_to_tray(|enabled| {
+        update_settings(|settings| settings.window.close_to_tray = enabled);
+        render_settings_now();
+    });
+    ui.on_sign_out({
+        let weak = window.as_weak();
+        move || {
+            let Some(window) = weak.upgrade() else { return };
+            let ephemeral = APP.with_borrow(|app| {
+                app.meter.stop();
+                app.settings.ephemeral
+            });
+            window.set_settings_open(false);
+            // The demo must not sign the real account out.
+            if !ephemeral {
+                token::clear();
+            }
+            disconnect(&window, "");
+        }
+    });
 }
 
 fn connect(window: &MainWindow, token: String) {
     window.set_login_error("".into());
     window.set_notice("".into());
     window.set_screen(SCREEN_MAIN);
-    window.set_connected(false);
-    window.set_status("Connecting…".into());
 
     let generation = APP.with_borrow_mut(|app| {
         app.client = None;
+        app.connection = Some(ConnectionState::Connecting);
+        app.watched.clear();
         app.generation += 1;
         app.generation
     });
+    render_status(window);
     let weak = window.as_weak();
     let transmit = APP.with_borrow(|app| app.transmit.clone());
     let client = Client::start(token, transmit, move |event| {
@@ -439,41 +453,33 @@ fn connect(window: &MainWindow, token: String) {
 fn disconnect(window: &MainWindow, error: &str) {
     APP.with_borrow_mut(|app| {
         app.client = None;
+        app.connection = None;
         app.generation += 1;
         app.snapshot = Arc::default();
         app.speaking.clear();
-        app.collapsed.clear();
+        app.list = ListState::default();
     });
-    render();
-    render_voice_bar(window);
-    render_tray();
-    window.set_volume_user("".into());
+    render_all();
     window.set_login_error(error.into());
     window.set_screen(SCREEN_LOGIN);
 }
 
 fn on_client_event(window: &MainWindow, event: ClientEvent) {
     match event {
+        ClientEvent::State(ConnectionState::AuthenticationFailed) => {
+            token::clear();
+            disconnect(window, "Discord rejected the token. Sign in again.");
+        }
         ClientEvent::State(state) => {
-            let status = match &state {
-                ConnectionState::Connecting => "Connecting…".to_owned(),
-                ConnectionState::Connected => "Connected".to_owned(),
-                ConnectionState::Reconnecting { attempt } => format!("Reconnecting (attempt {attempt})…"),
-                ConnectionState::Failed(reason) => format!("Disconnected: {reason}"),
-                ConnectionState::AuthenticationFailed => {
-                    token::clear();
-                    disconnect(window, "Discord rejected the token. Sign in again.");
-                    return;
-                }
-            };
-            window.set_connected(state == ConnectionState::Connected);
-            window.set_status(status.into());
+            APP.with_borrow_mut(|app| app.connection = Some(state));
+            render_status(window);
             render_tray();
         }
         ClientEvent::Snapshot(snapshot) => {
             APP.with_borrow_mut(|app| {
                 if snapshot.voice.is_none() {
-                    app.speaking.clear();
+                    let me = snapshot.me.as_ref().map(|(id, _)| *id);
+                    app.speaking.retain(|id| Some(*id) == me);
                 }
                 let voice = &mut app.settings.voice;
                 if (voice.self_mute, voice.self_deaf) != (snapshot.self_mute, snapshot.self_deaf) {
@@ -482,13 +488,11 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
                 }
                 app.snapshot = snapshot;
             });
-            render();
-            render_voice_bar(window);
-            render_tray();
+            render_all();
         }
         ClientEvent::Speaking(users) => {
             APP.with_borrow_mut(|app| app.speaking = users.into_iter().collect());
-            update_speaking();
+            update_speaking(window);
         }
         ClientEvent::TokenRefreshed(token) => {
             if let Err(e) = token::save(&token) {
@@ -522,6 +526,28 @@ fn send(command: Command) {
     });
 }
 
+fn join(guild: &str, channel: &str) {
+    if let (Some(guild_id), Some(channel_id)) = (parse_id(guild), parse_id(channel)) {
+        send(Command::JoinVoice { guild_id, channel_id });
+    }
+}
+
+fn toggle_mute() {
+    let (mute, deaf) = APP.with_borrow(|app| (app.snapshot.self_mute, app.snapshot.self_deaf));
+    // Like the official client: unmuting while deafened also undeafens.
+    if deaf {
+        send(Command::SetSelfDeaf(false));
+        send(Command::SetSelfMute(false));
+    } else {
+        send(Command::SetSelfMute(!mute));
+    }
+}
+
+fn toggle_deafen() {
+    let deaf = APP.with_borrow(|app| app.snapshot.self_deaf);
+    send(Command::SetSelfDeaf(!deaf));
+}
+
 fn modify_member(guild: &str, user: &str, change: MemberChange) {
     if let (Some(guild_id), Some(user_id)) = (parse_id(guild), parse_id(user)) {
         send(Command::ModifyMember { guild_id, user_id, change });
@@ -539,6 +565,13 @@ fn update_user_audio(user: &str, update: impl FnOnce(&mut settings::UserAudio)) 
     render();
 }
 
+fn update_settings(update: impl FnOnce(&mut Settings)) {
+    APP.with_borrow_mut(|app| {
+        update(&mut app.settings);
+        app.settings.save();
+    });
+}
+
 /// Changes a voice setting, saves it and applies it to the microphone pipeline.
 fn update_voice_settings(update: impl FnOnce(&mut VoiceSettings, &App)) {
     APP.with_borrow_mut(|app| {
@@ -554,6 +587,14 @@ fn update_voice_settings(update: impl FnOnce(&mut VoiceSettings, &App)) {
         app.settings.voice = voice;
         app.settings.save();
     });
+}
+
+fn apply_voice_settings(transmit: &TransmitControl, voice: &VoiceSettings) {
+    transmit.set_push_to_talk(voice.push_to_talk);
+    transmit.set_threshold_db(voice.threshold_db);
+    transmit.set_noise_suppression(voice.noise_suppression);
+    transmit.set_input_gain(voice.input_gain());
+    transmit.set_auto_gain(voice.auto_gain);
 }
 
 fn update_hotkeys(update: impl FnOnce(&mut HotkeySettings)) {
@@ -581,14 +622,6 @@ fn set_binding(target: KeyTarget, binding: Option<Binding>) {
     }
 }
 
-fn apply_voice_settings(transmit: &TransmitControl, voice: &VoiceSettings) {
-    transmit.set_push_to_talk(voice.push_to_talk);
-    transmit.set_threshold_db(voice.threshold_db);
-    transmit.set_noise_suppression(voice.noise_suppression);
-    transmit.set_input_gain(voice.input_gain());
-    transmit.set_auto_gain(voice.auto_gain);
-}
-
 fn audio_devices(voice: &VoiceSettings) -> AudioDevices {
     AudioDevices { input: voice.input_device.clone(), output: voice.output_device.clone() }
 }
@@ -598,43 +631,10 @@ fn send_devices() {
     send(Command::SetAudioDevices(devices));
 }
 
-/// The device at a settings combo box index; index 0 is "System default".
+/// The device at a settings dropdown index; index 0 is "System default".
 fn device_at(devices: &[AudioDevice], index: i32) -> Option<String> {
     let index = usize::try_from(index).ok()?.checked_sub(1)?;
     devices.get(index).map(|device| device.id.clone())
-}
-
-fn render_settings(window: &MainWindow) {
-    let view = APP.with_borrow(|app| {
-        let voice = &app.settings.voice;
-        let names = |devices: &[AudioDevice]| {
-            let names: Vec<slint::SharedString> = std::iter::once("System default".into())
-                .chain(devices.iter().map(|device| device.name.as_str().into()))
-                .collect();
-            ModelRc::new(VecModel::from(names))
-        };
-        let index = |devices: &[AudioDevice], id: &Option<String>| {
-            id.as_ref()
-                .and_then(|id| devices.iter().position(|device| &device.id == id))
-                .map_or(0, |position| position as i32 + 1)
-        };
-        VoiceSettingsView {
-            inputs: names(&app.inputs),
-            outputs: names(&app.outputs),
-            input_index: index(&app.inputs, &voice.input_device),
-            output_index: index(&app.outputs, &voice.output_device),
-            push_to_talk: voice.push_to_talk,
-            key_name: voice.push_to_talk_key.map(hotkey::key_name).unwrap_or_default().into(),
-            mute_key: app.settings.hotkeys.toggle_mute.map(Binding::name).unwrap_or_default().into(),
-            deafen_key: app.settings.hotkeys.toggle_deafen.map(Binding::name).unwrap_or_default().into(),
-            capturing: app.capturing.map_or(-1, |target| target as i32),
-            autostart: win::autostart_enabled(),
-            close_to_tray: app.settings.window.close_to_tray,
-            noise_suppression: voice.noise_suppression,
-            auto_gain: voice.auto_gain,
-        }
-    });
-    window.set_voice_settings(view);
 }
 
 fn user_audio(audio: settings::UserAudio) -> UserAudio {
@@ -645,97 +645,121 @@ fn parse_id(id: &str) -> Option<Id> {
     id.parse().ok()
 }
 
-/// Flattens the snapshot into list rows, honoring collapsed guilds.
-fn render() {
-    APP.with_borrow(|app| {
-        let mut rows = Vec::new();
-        for guild in &app.snapshot.guilds {
-            let guild_id: slint::SharedString = guild.id.to_string().into();
-            let expanded = !app.collapsed.contains(&guild.id);
-            rows.push(Row {
-                kind: RowKind::Guild,
-                id: guild_id.clone(),
-                label: guild.name.as_str().into(),
-                expanded,
-                ..Default::default()
-            });
-            if !expanded {
-                continue;
-            }
-            for channel in &guild.channels {
-                let current = app.snapshot.voice.as_ref().is_some_and(|voice| voice.channel_id == channel.id);
-                rows.push(Row {
-                    kind: RowKind::Channel,
-                    id: channel.id.to_string().into(),
-                    label: channel.name.as_str().into(),
-                    guild_id: guild_id.clone(),
-                    count: channel.participants.len() as i32,
-                    limit: channel.user_limit as i32,
-                    can_connect: channel.can_connect,
-                    current,
-                    ..Default::default()
-                });
-                if channel.participants.is_empty() {
-                    continue;
-                }
+fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+    let items: Vec<SharedString> = items.into_iter().map(SharedString::from).collect();
+    ModelRc::new(VecModel::from(items))
+}
 
-                // Every participant of a channel can be moved to the same channels.
-                let targets: Vec<Target> = guild
-                    .channels
-                    .iter()
-                    .filter(|target| target.can_connect && target.id != channel.id)
-                    .map(|target| Target { id: target.id.to_string().into(), name: target.name.as_str().into() })
-                    .collect();
-                let targets = ModelRc::new(VecModel::from(targets));
+fn with_window(f: impl FnOnce(&MainWindow)) {
+    let window = APP.with_borrow(|app| app.window.as_ref().and_then(slint::Weak::upgrade));
+    if let Some(window) = window {
+        f(&window);
+    }
+}
 
-                for participant in &channel.participants {
-                    let audio = app.settings.user(participant.user_id);
-                    rows.push(Row {
-                        kind: RowKind::Participant,
-                        id: participant.user_id.to_string().into(),
-                        label: participant.name.as_str().into(),
-                        guild_id: guild_id.clone(),
-                        initial: initial(&participant.name).into(),
-                        self_mute: participant.self_mute,
-                        self_deaf: participant.self_deaf,
-                        server_mute: participant.server_mute,
-                        server_deaf: participant.server_deaf,
-                        live: participant.streaming,
-                        speaking: current && app.speaking.contains(&participant.user_id),
-                        is_me: participant.is_me,
-                        local_mute: audio.muted && !participant.is_me,
-                        volume: i32::from(audio.volume),
-                        can_mute: participant.moderation.mute,
-                        can_deafen: participant.moderation.deafen,
-                        can_move: participant.moderation.move_,
-                        targets: targets.clone(),
-                        ..Default::default()
-                    });
-                }
-            }
+fn render_settings_now() {
+    with_window(render_settings);
+}
+
+fn render_settings(window: &MainWindow) {
+    let view = APP.with_borrow(|app| {
+        let voice = &app.settings.voice;
+        let names = |devices: &[AudioDevice]| {
+            strings(std::iter::once("System default".to_owned()).chain(devices.iter().map(|d| d.name.clone())))
+        };
+        let index = |devices: &[AudioDevice], id: &Option<String>| {
+            id.as_ref()
+                .and_then(|id| devices.iter().position(|device| &device.id == id))
+                .map_or(0, |position| position as i32 + 1)
+        };
+        let keys = |binding: Option<Binding>| strings(binding.map(Binding::parts).unwrap_or_default());
+        SettingsView {
+            inputs: names(&app.inputs),
+            outputs: names(&app.outputs),
+            input_index: index(&app.inputs, &voice.input_device),
+            output_index: index(&app.outputs, &voice.output_device),
+            push_to_talk: voice.push_to_talk,
+            ptt_keys: strings(voice.push_to_talk_key.map(hotkey::key_name)),
+            mute_keys: keys(app.settings.hotkeys.toggle_mute),
+            deafen_keys: keys(app.settings.hotkeys.toggle_deafen),
+            capturing: app.capturing.map_or(-1, |target| target as i32),
+            noise_suppression: voice.noise_suppression,
+            auto_gain: voice.auto_gain,
+            autostart: win::autostart_enabled(),
+            close_to_tray: app.settings.window.close_to_tray,
+            account: app.snapshot.me.as_ref().map(|(_, name)| name.as_str()).unwrap_or_default().into(),
+            version: concat!("bardo ", env!("CARGO_PKG_VERSION")).into(),
         }
-        app.rows.set_vec(rows);
     });
+    window.global::<SettingsUi>().set_view(view);
+}
+
+/// Everything that depends on the snapshot.
+fn render_all() {
+    render();
+    with_window(|window| {
+        render_voice(window);
+        render_status(window);
+    });
+    render_tray();
+}
+
+/// Rebuilds the list, and tells the client which guilds are on screen.
+fn render() {
+    let watched = APP.with_borrow(|app| {
+        let cx = Context { snapshot: &app.snapshot, settings: &app.settings, speaking: &app.speaking, list: &app.list };
+        app.rows.set_vec(view::rows(&cx));
+        view::watched_guilds(&cx)
+    });
+    let changed = APP.with_borrow_mut(|app| {
+        let changed = app.watched != watched;
+        app.watched = watched.clone();
+        changed
+    });
+    if changed {
+        send(Command::SetWatchedGuilds(watched));
+    }
 }
 
 /// Refreshes only the speaking flags, which change several times a second.
-fn update_speaking() {
+fn update_speaking(window: &MainWindow) {
     APP.with_borrow(|app| {
         for index in 0..app.rows.row_count() {
             let Some(mut row) = app.rows.row_data(index) else { continue };
-            if row.kind != RowKind::Participant {
+            if !matches!(row.kind, RowKind::Participant | RowKind::Person) {
                 continue;
             }
-            let speaking = parse_id(&row.id).is_some_and(|id| app.speaking.contains(&id));
+            let speaking = row.current && parse_id(&row.id).is_some_and(|id| app.speaking.contains(&id));
             if row.speaking != speaking {
                 row.speaking = speaking;
                 app.rows.set_row_data(index, row);
             }
         }
+        let me = app.snapshot.me.as_ref().map(|(id, _)| *id);
+        window.set_me_speaking(me.is_some_and(|me| app.speaking.contains(&me)));
     });
 }
 
-fn render_voice_bar(window: &MainWindow) {
+fn render_status(window: &MainWindow) {
+    APP.with_borrow(|app| {
+        let status = match &app.connection {
+            None | Some(ConnectionState::Connecting) => "Connecting…".to_owned(),
+            Some(ConnectionState::Connected) => "Connected".to_owned(),
+            Some(ConnectionState::Reconnecting { attempt }) => format!("Reconnecting (attempt {attempt})…"),
+            Some(ConnectionState::Failed(reason)) => format!("Offline: {reason}"),
+            Some(ConnectionState::AuthenticationFailed) => "Signed out".to_owned(),
+        };
+        window.set_status(status.into());
+        window.set_connected(app.connection == Some(ConnectionState::Connected));
+        let name = app.snapshot.me.as_ref().map(|(_, name)| name.as_str()).unwrap_or("bardo");
+        window.set_me_name(name.into());
+        window.set_me_initial(view::initial(name).into());
+        window.set_self_mute(app.snapshot.self_mute);
+        window.set_self_deaf(app.snapshot.self_deaf);
+    });
+}
+
+fn render_voice(window: &MainWindow) {
     let bar = APP.with_borrow(|app| match &app.snapshot.voice {
         Some(voice) => VoiceBar {
             active: true,
@@ -747,8 +771,6 @@ fn render_voice_bar(window: &MainWindow) {
             .into(),
             channel: voice.channel_name.as_str().into(),
             guild: voice.guild_name.as_str().into(),
-            muted: voice.self_mute,
-            deafened: voice.self_deaf,
         },
         None => VoiceBar::default(),
     });
@@ -775,11 +797,4 @@ fn render_tray() {
         }
         tray.set_status_text(tooltip.into());
     });
-}
-
-fn initial(name: &str) -> String {
-    name.chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_else(|| "?".to_owned())
 }
