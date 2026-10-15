@@ -33,6 +33,8 @@ pub struct CallView {
     pub participants: Vec<Participant>,
     /// Someone is calling us.
     pub ringing_me: bool,
+    /// Someone besides us is being rung.
+    pub ringing_others: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +187,7 @@ fn calls(store: &Store, me: Id) -> Vec<CallView> {
                 group: channel.is_some_and(Store::is_group),
                 participants,
                 ringing_me,
+                ringing_others: call.ringing.iter().any(|&user_id| user_id != me),
             })
         })
         .collect();

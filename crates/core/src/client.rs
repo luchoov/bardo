@@ -6,7 +6,7 @@ use std::{
 };
 
 use bardo_api::{Http, MemberChange};
-use bardo_audio::TransmitControl;
+use bardo_audio::{Sound, TransmitControl};
 use bardo_gateway::{
     CAPABILITIES, Config, ConnectionState, Event, Gateway, Id, Notification, RequestGuildMembers,
 };
@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    cues,
     snapshot::Snapshot,
     store::Store,
     voice::{AudioDevices, Outcome, UserAudio, VoiceDriver, VoiceSession},
@@ -37,6 +38,8 @@ pub enum ClientEvent {
     TokenRefreshed(String),
     /// Something the user should know about, such as a failed command.
     Notice(String),
+    /// A cue for something that happened in voice: we joined, someone left, we were moved…
+    Sound(Sound),
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +239,8 @@ struct Session {
     internal: mpsc::UnboundedSender<Internal>,
     /// A call we started: the others are rung once we are connected.
     ring_when_connected: Option<Id>,
+    /// The last snapshot sent, to tell who came and went.
+    published: Arc<Snapshot>,
 }
 
 impl Session {
@@ -253,14 +258,20 @@ impl Session {
             supplemental_received: false,
             requested_members: HashSet::new(),
             watched_guilds: HashSet::new(),
+            published: Arc::default(),
         }
     }
 
-    fn publish(&self, on_event: &impl Fn(ClientEvent)) {
+    fn publish(&mut self, on_event: &impl Fn(ClientEvent)) {
         let mut snapshot = Snapshot::build(&self.store);
         snapshot.voice = self.voice.view(&self.store);
         (snapshot.self_mute, snapshot.self_deaf) = self.voice.self_state();
-        on_event(ClientEvent::Snapshot(Arc::new(snapshot)));
+        let snapshot = Arc::new(snapshot);
+        for sound in cues::between(&self.published, &snapshot) {
+            on_event(ClientEvent::Sound(sound));
+        }
+        self.published = snapshot.clone();
+        on_event(ClientEvent::Snapshot(snapshot));
     }
 
     /// Leaves voice if we are in a channel. Returns whether we were.
@@ -286,6 +297,9 @@ impl Session {
     fn settle_voice(&mut self, outcome: Outcome, gateway: &Gateway, on_event: &impl Fn(ClientEvent)) -> bool {
         for action in self.voice.take_actions() {
             self.driver.perform(action, gateway);
+        }
+        for sound in self.voice.take_cues() {
+            on_event(ClientEvent::Sound(sound));
         }
         match outcome {
             Outcome::Nothing => false,

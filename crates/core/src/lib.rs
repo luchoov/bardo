@@ -2,6 +2,7 @@
 //! receive events.
 
 mod client;
+pub mod cues;
 mod mic_test;
 pub mod permissions;
 mod snapshot;

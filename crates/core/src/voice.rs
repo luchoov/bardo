@@ -6,7 +6,7 @@
 
 use std::{collections::HashMap, mem, sync::Arc};
 
-use bardo_audio::{Capture, Playback, TransmitControl, Transmitter};
+use bardo_audio::{Capture, Playback, Sound, TransmitControl, Transmitter};
 use bardo_gateway::{Gateway, Id, UpdateVoiceState, VoiceServerUpdate, VoiceState};
 use bardo_voice::{ConnectionInfo, EventCallback, Voice, VoiceEvent};
 use tokio::sync::mpsc;
@@ -81,7 +81,12 @@ pub(crate) struct VoiceSession {
     server: Option<(String, String)>,
     /// The connection the driver was last asked to make.
     connected: Option<ConnectionInfo>,
+    /// The join sound played for the current channel; being moved or reconnecting doesn't replay it.
+    announced: bool,
+    /// Our server mute and deafen in the current channel, once Discord has told us.
+    server_state: Option<(bool, bool)>,
     actions: Vec<Action>,
+    cues: Vec<Sound>,
 }
 
 impl VoiceSession {
@@ -123,6 +128,11 @@ impl VoiceSession {
         mem::take(&mut self.actions)
     }
 
+    /// The sounds for what happened to us since the last call.
+    pub fn take_cues(&mut self) -> Vec<Sound> {
+        mem::take(&mut self.cues)
+    }
+
     /// The channel we are connected to, once the voice handshake is done.
     pub fn connected_channel(&self) -> Option<Id> {
         self.target.filter(|_| self.status == VoiceStatus::Connected).map(|target| target.channel_id)
@@ -139,6 +149,10 @@ impl VoiceSession {
             self.connected = None;
             self.voice_session_id = None;
             self.server = None;
+            self.server_state = None;
+        }
+        if self.target.is_none_or(|target| target.channel_id != channel_id) {
+            self.announced = false;
         }
         info!(?guild_id, %channel_id, "joining voice");
         self.target = Some(new);
@@ -150,7 +164,16 @@ impl VoiceSession {
     }
 
     pub fn leave(&mut self) -> Outcome {
-        let Some(target) = self.target else { return Outcome::Nothing };
+        if !self.leave_channel() {
+            return Outcome::Nothing;
+        }
+        self.cues.push(Sound::Leave);
+        Outcome::Changed
+    }
+
+    /// Tells Discord we left and resets. Returns whether we were in a channel.
+    fn leave_channel(&mut self) -> bool {
+        let Some(target) = self.target else { return false };
         info!(guild_id = ?target.guild_id, "leaving voice");
         self.actions.push(Action::UpdateState(UpdateVoiceState {
             guild_id: target.guild_id,
@@ -160,7 +183,21 @@ impl VoiceSession {
             self_video: false,
         }));
         self.reset();
-        Outcome::Changed
+        true
+    }
+
+    /// We are out of voice for a reason the user should know about.
+    fn dropped(&mut self, notice: String) -> Outcome {
+        self.cues.push(Sound::Disconnected);
+        Outcome::Notice(notice)
+    }
+
+    /// The voice connection is up.
+    fn on_connected(&mut self) {
+        self.status = VoiceStatus::Connected;
+        if !mem::replace(&mut self.announced, true) {
+            self.cues.push(Sound::Join);
+        }
     }
 
     pub fn set_self_mute(&mut self, mute: bool) -> Outcome {
@@ -187,7 +224,7 @@ impl VoiceSession {
             return Outcome::Nothing;
         }
         self.reset();
-        Outcome::Notice("Disconnected from voice after the connection to Discord was reset.".into())
+        self.dropped("Disconnected from voice after the connection to Discord was reset.".into())
     }
 
     /// `session_id` is our gateway session: voice states with another one belong to our other clients.
@@ -199,7 +236,7 @@ impl VoiceSession {
             // Joining from another client takes the voice connection away from this one.
             if state.channel_id.is_some() {
                 self.reset();
-                return Outcome::Notice("Voice moved to another of your devices.".into());
+                return self.dropped("Voice moved to another of your devices.".into());
             }
             return Outcome::Nothing;
         }
@@ -210,13 +247,23 @@ impl VoiceSession {
 
         let Some(channel_id) = state.channel_id else {
             self.reset();
-            return Outcome::Notice("Disconnected from voice.".into());
+            return self.dropped("Disconnected from voice.".into());
         };
         if let Some(target) = &mut self.target
             && target.channel_id != channel_id
         {
             info!(%channel_id, "moved to another voice channel");
             target.channel_id = channel_id;
+            self.cues.push(Sound::Moved);
+        }
+        let server_state = (state.mute, state.deaf);
+        if let Some((mute, deaf)) = self.server_state.replace(server_state) {
+            // A moderator's mute or deafen; the first state we get in a channel is not news.
+            if deaf != state.deaf {
+                self.cues.push(if state.deaf { Sound::Deafen } else { Sound::Undeafen });
+            } else if mute != state.mute {
+                self.cues.push(if state.mute { Sound::Mute } else { Sound::Unmute });
+            }
         }
         self.voice_session_id = Some(state.session_id.clone());
         self.try_connect(me);
@@ -250,12 +297,12 @@ impl VoiceSession {
         }
         match event {
             VoiceEvent::Connected | VoiceEvent::Reconnected => {
-                self.status = VoiceStatus::Connected;
+                self.on_connected();
                 Outcome::Changed
             }
             VoiceEvent::Disconnected { reason: Some(reason) } => {
-                self.leave();
-                Outcome::Notice(format!("Lost the voice connection: {reason}"))
+                self.leave_channel();
+                self.dropped(format!("Lost the voice connection: {reason}"))
             }
             VoiceEvent::Disconnected { reason: None }
             | VoiceEvent::Speaking(_)
@@ -270,13 +317,13 @@ impl VoiceSession {
         }
         match result {
             Ok(()) => {
-                self.status = VoiceStatus::Connected;
+                self.on_connected();
                 Outcome::Changed
             }
             Err(e) => {
                 warn!("voice connection failed: {e}");
-                self.leave();
-                Outcome::Notice(format!("Couldn't connect to voice: {e}"))
+                self.leave_channel();
+                self.dropped(format!("Couldn't connect to voice: {e}"))
             }
         }
     }
@@ -322,6 +369,8 @@ impl VoiceSession {
         self.voice_session_id = None;
         self.server = None;
         self.connected = None;
+        self.announced = false;
+        self.server_state = None;
     }
 }
 
@@ -648,6 +697,93 @@ mod tests {
 
         voice.set_self_deaf(false);
         assert_eq!(voice.take_actions()[0], Action::SelfState { mute: false, deaf: false });
+    }
+
+    fn connected() -> VoiceSession {
+        let mut voice = joined();
+        voice.on_voice_state(&state(Some(CHANNEL), SESSION), ME, SESSION);
+        voice.on_voice_server(&server(Some("voice.discord.media:443")), ME);
+        voice.on_connect_result(&connect_info(CHANNEL), Ok(()));
+        voice.take_actions();
+        voice
+    }
+
+    #[test]
+    fn joining_sounds_once_connected_and_not_on_reconnects() {
+        let mut voice = joined();
+        voice.on_voice_state(&state(Some(CHANNEL), SESSION), ME, SESSION);
+        voice.on_voice_server(&server(Some("voice.discord.media:443")), ME);
+        assert!(voice.take_cues().is_empty());
+        voice.on_connect_result(&connect_info(CHANNEL), Ok(()));
+        assert_eq!(voice.take_cues(), [Sound::Join]);
+
+        voice.on_voice_event(&VoiceEvent::Reconnected);
+        voice.on_voice_event(&VoiceEvent::Connected);
+        assert!(voice.take_cues().is_empty());
+
+        // Switching channels ourselves is a new arrival.
+        voice.join(Some(GUILD), Id(21));
+        voice.on_voice_state(&state(Some(Id(21)), SESSION), ME, SESSION);
+        voice.on_connect_result(&connect_info(Id(21)), Ok(()));
+        assert_eq!(voice.take_cues(), [Sound::Join]);
+        // Clicking the channel we are in is not.
+        voice.join(Some(GUILD), Id(21));
+        voice.on_voice_state(&state(Some(Id(21)), SESSION), ME, SESSION);
+        assert!(voice.take_cues().is_empty());
+    }
+
+    #[test]
+    fn being_moved_sounds_instead_of_joining_again() {
+        let mut voice = connected();
+        voice.take_cues();
+        voice.on_voice_state(&state(Some(Id(21)), SESSION), ME, SESSION);
+        voice.on_connect_result(&connect_info(Id(21)), Ok(()));
+        assert_eq!(voice.take_cues(), [Sound::Moved]);
+    }
+
+    #[test]
+    fn leaving_and_being_disconnected_sound_different() {
+        let mut voice = connected();
+        voice.take_cues();
+        voice.leave();
+        assert_eq!(voice.take_cues(), [Sound::Leave]);
+        assert_eq!(voice.leave(), Outcome::Nothing);
+        assert!(voice.take_cues().is_empty());
+
+        let mut voice = connected();
+        voice.take_cues();
+        voice.on_voice_state(&state(None, SESSION), ME, SESSION);
+        assert_eq!(voice.take_cues(), [Sound::Disconnected]);
+
+        let mut voice = connected();
+        voice.take_cues();
+        voice.on_voice_event(&VoiceEvent::Disconnected { reason: Some("gone".into()) });
+        assert_eq!(voice.take_cues(), [Sound::Disconnected]);
+    }
+
+    #[test]
+    fn moderators_muting_and_deafening_us_sound() {
+        let server_state = |mute, deaf| {
+            let mut state = state(Some(CHANNEL), SESSION);
+            (state.mute, state.deaf) = (mute, deaf);
+            state
+        };
+        // Being server muted already when we arrive is not news.
+        let mut voice = joined();
+        voice.on_voice_state(&server_state(true, false), ME, SESSION);
+        assert!(voice.take_cues().is_empty());
+
+        voice.on_voice_state(&server_state(false, false), ME, SESSION);
+        assert_eq!(voice.take_cues(), [Sound::Unmute]);
+        voice.on_voice_state(&server_state(true, true), ME, SESSION);
+        assert_eq!(voice.take_cues(), [Sound::Deafen]);
+        voice.on_voice_state(&server_state(true, false), ME, SESSION);
+        assert_eq!(voice.take_cues(), [Sound::Undeafen]);
+        // Our own mute changing is the app's sound, not this one.
+        let mut self_muted = server_state(true, false);
+        self_muted.self_mute = true;
+        voice.on_voice_state(&self_muted, ME, SESSION);
+        assert!(voice.take_cues().is_empty());
     }
 
     #[test]

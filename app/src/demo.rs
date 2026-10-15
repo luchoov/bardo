@@ -1,12 +1,13 @@
 //! Debug builds only: `BARDO_DEMO=1` shows made-up servers instead of connecting, to work on the UI
-//! without an account. `BARDO_DEMO=login` shows the sign-in screen instead, and `BARDO_DEMO=call` an
-//! incoming call. Nothing is saved.
+//! without an account. `BARDO_DEMO=login` shows the sign-in screen instead, `BARDO_DEMO=call` an
+//! incoming call, and `BARDO_DEMO=sounds` plays people coming and going and a call we make, to hear
+//! every sound. Nothing is saved.
 
 use std::collections::HashSet;
 
 use bardo_core::{
     CallView, ChannelView, FriendInVoice, GuildView, Id, Moderation, Participant, PrivateChannelView, Snapshot,
-    VoiceStatus, VoiceView,
+    Sound, VoiceStatus, VoiceView,
 };
 
 pub fn enabled() -> bool {
@@ -15,6 +16,113 @@ pub fn enabled() -> bool {
 
 pub fn login() -> bool {
     std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "login")
+}
+
+pub fn sounds() -> bool {
+    std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "sounds")
+}
+
+/// One step of the sound demo, a second or so apart.
+pub enum Step {
+    /// What the client would send for something that happened to us.
+    Sound(Sound),
+    /// A new snapshot; the sounds for who came and went are worked out from it.
+    Snapshot(Box<Snapshot>),
+    Wait,
+}
+
+const OUR_CHANNEL: Id = Id(10);
+const FANTA_DM: Id = Id(62);
+
+/// We join, people come and go (two at once, which must not stack up), our own cues play, then we
+/// call Fanta, who answers after a few rings and hangs up.
+pub fn sound_script() -> Vec<Step> {
+    let base = snapshot();
+    let with_channel = |update: &dyn Fn(&mut Vec<Participant>)| {
+        let mut snapshot = base.clone();
+        let channel = snapshot.guilds[0].channels.iter_mut().find(|c| c.id == OUR_CHANNEL).unwrap();
+        update(&mut channel.participants);
+        snapshot
+    };
+    let newcomer = |id: u64, name: &str| Participant {
+        user_id: Id(id),
+        name: name.to_owned(),
+        ..base.guilds[0].channels[0].participants[1].clone()
+    };
+    let nico = with_channel(&|people| people.push(newcomer(120, "Nico")));
+    let crowd = with_channel(&|people| {
+        people.push(newcomer(120, "Nico"));
+        people.push(newcomer(121, "Rama"));
+        people.push(newcomer(122, "Mati"));
+    });
+    let fanta_left = with_channel(&|people| {
+        people.extend([newcomer(120, "Nico"), newcomer(121, "Rama"), newcomer(122, "Mati")]);
+        people.retain(|p| p.user_id != Id(101));
+    });
+
+    let call = |others: &[(u64, &str)], ringing_others: bool| {
+        let mut snapshot = base.clone();
+        let me = base.guilds[0].channels[0].participants[0].clone();
+        snapshot.voice = Some(VoiceView {
+            guild_id: None,
+            channel_id: FANTA_DM,
+            guild_name: "Call".to_owned(),
+            channel_name: "Fanta".to_owned(),
+            status: VoiceStatus::Connected,
+            self_mute: false,
+            self_deaf: false,
+        });
+        let mut participants = vec![me];
+        participants.extend(others.iter().map(|&(id, name)| newcomer(id, name)));
+        snapshot.calls.push(CallView {
+            channel_id: FANTA_DM,
+            name: "Fanta".to_owned(),
+            group: false,
+            participants,
+            ringing_me: false,
+            ringing_others,
+        });
+        snapshot
+    };
+
+    let mut steps = vec![
+        Step::Sound(Sound::Join),
+        Step::Snapshot(Box::new(base.clone())),
+        Step::Snapshot(Box::new(nico)),
+        Step::Snapshot(Box::new(crowd)),
+        Step::Snapshot(Box::new(fanta_left)),
+        Step::Wait,
+    ];
+    steps.extend(
+        [
+            Sound::Mute,
+            Sound::Unmute,
+            Sound::Deafen,
+            Sound::Undeafen,
+            Sound::PushToTalkOn,
+            Sound::PushToTalkOff,
+            Sound::Moved,
+            Sound::Disconnected,
+            Sound::Leave,
+        ]
+        .map(Step::Sound),
+    );
+    steps.extend([
+        Step::Wait,
+        Step::Snapshot(Box::new(call(&[], false))),
+        Step::Snapshot(Box::new(call(&[], true))),
+        Step::Wait,
+        Step::Wait,
+        Step::Wait,
+        Step::Wait,
+        Step::Wait,
+        Step::Snapshot(Box::new(call(&[(101, "Fanta")], false))),
+        Step::Wait,
+        Step::Snapshot(Box::new(call(&[], false))),
+        Step::Wait,
+        Step::Snapshot(Box::new(base)),
+    ]);
+    steps
 }
 
 pub fn speaking() -> HashSet<Id> {
@@ -134,6 +242,7 @@ pub fn snapshot() -> Snapshot {
             group: false,
             participants: vec![Participant { moderation: Moderation::default(), ..friend(104, "Dante") }],
             ringing_me: std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "call"),
+            ringing_others: false,
         },
         CallView {
             channel_id: Id(61),
@@ -141,6 +250,7 @@ pub fn snapshot() -> Snapshot {
             group: true,
             participants: vec![stranger(120, "Nico"), stranger(121, "Rama")],
             ringing_me: false,
+            ringing_others: false,
         },
     ];
     let private_channels = vec![

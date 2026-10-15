@@ -84,6 +84,8 @@ impl Binding {
 pub enum Action {
     ToggleMute,
     ToggleDeafen,
+    /// The push-to-talk key went down or up.
+    PushToTalk(bool),
 }
 
 const ACTIONS: [Action; 2] = [Action::ToggleMute, Action::ToggleDeafen];
@@ -148,6 +150,7 @@ fn run(shared: &Shared, control: &TransmitControl, on_action: &ActionCallback) {
     let mut capture: Option<Capture> = None;
     // Whether each action's binding was down on the last poll: actions fire on the press only.
     let mut was_down = [false; ACTIONS.len()];
+    let mut ptt_was_down = false;
     while !shared.stop.load(Ordering::Relaxed) {
         let mut pending = shared.capture.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if pending.is_some() {
@@ -165,7 +168,12 @@ fn run(shared: &Shared, control: &TransmitControl, on_action: &ActionCallback) {
             capture = None;
             drop(pending);
             let key = shared.push_to_talk.load(Ordering::Relaxed);
-            control.set_ptt_pressed(key != 0 && is_down(key));
+            let ptt_down = key != 0 && is_down(key);
+            control.set_ptt_pressed(ptt_down);
+            if ptt_down != ptt_was_down {
+                ptt_was_down = ptt_down;
+                on_action(Action::PushToTalk(ptt_down));
+            }
             for ((&action, packed), was_down) in ACTIONS.iter().zip(&shared.actions).zip(&mut was_down) {
                 let down = Binding::unpack(packed.load(Ordering::Relaxed)).is_some_and(Binding::is_down);
                 if down && !*was_down {

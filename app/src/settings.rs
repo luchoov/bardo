@@ -98,6 +98,8 @@ pub struct VoiceSettings {
     pub push_to_talk: bool,
     /// Windows virtual-key code.
     pub push_to_talk_key: Option<u32>,
+    /// A click when the push-to-talk key goes down and up (with [`Self::sounds`] on).
+    pub push_to_talk_sounds: bool,
     /// Voice activity threshold in dBFS.
     pub threshold_db: f32,
     pub noise_suppression: bool,
@@ -107,7 +109,7 @@ pub struct VoiceSettings {
     /// Our mute and deafen, kept across restarts like in the official client.
     pub self_mute: bool,
     pub self_deaf: bool,
-    /// Short sounds when muting and deafening, and the ringtone.
+    /// Short sounds for mute and deafen, people joining and leaving, and calls.
     pub sounds: bool,
 }
 
@@ -125,6 +127,7 @@ impl Default for VoiceSettings {
             output_device: None,
             push_to_talk: false,
             push_to_talk_key: None,
+            push_to_talk_sounds: false,
             threshold_db: DEFAULT_THRESHOLD_DB,
             noise_suppression: true,
             input_volume: DEFAULT_VOLUME,

@@ -16,33 +16,96 @@ use tracing::warn;
 use crate::{Playback, SAMPLE_RATE, STEREO_FRAME_LEN};
 
 const VOLUME: f32 = 0.12;
-/// Silence between rings.
+/// Silence after each ring and each ringback.
 const RING_PAUSE: f32 = 1.4;
+const RINGBACK_PAUSE: f32 = 2.2;
+/// Silence left after a cue so the device plays it out.
+const TAIL: f32 = 0.05;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sound {
+    /// Our own mute and deafen, also when a moderator sets them.
     Mute,
     Unmute,
     Deafen,
     Undeafen,
+    /// We joined a channel or call, left it, were disconnected, or were moved by someone else.
+    Join,
+    Leave,
+    Disconnected,
+    Moved,
+    /// Someone joined or left our channel or call.
+    UserJoin,
+    UserLeave,
+    /// We are alone in a call that had others, or nobody answered.
+    CallEnded,
+    PushToTalkOn,
+    PushToTalkOff,
 }
 
-/// A note: frequency in Hz, start and length in seconds.
-struct Note(f32, f32, f32);
-
 impl Sound {
+    pub const ALL: [Sound; 13] = [
+        Sound::Mute,
+        Sound::Unmute,
+        Sound::Deafen,
+        Sound::Undeafen,
+        Sound::Join,
+        Sound::Leave,
+        Sound::Disconnected,
+        Sound::Moved,
+        Sound::UserJoin,
+        Sound::UserLeave,
+        Sound::CallEnded,
+        Sound::PushToTalkOn,
+        Sound::PushToTalkOff,
+    ];
+
+    /// Direct feedback on our own mute, deafen and push-to-talk (also when a moderator changes
+    /// them): it plays while deafened, and without waiting its turn.
+    pub fn is_feedback(self) -> bool {
+        matches!(
+            self,
+            Sound::Mute | Sound::Unmute | Sound::Deafen | Sound::Undeafen | Sound::PushToTalkOn | Sound::PushToTalkOff
+        )
+    }
+
     fn notes(self) -> &'static [Note] {
-        // Falling for "off", rising for "on"; deafen is a fifth lower than mute.
+        // Falling for "off" and "out", rising for "on" and "in"; deafen is a fifth lower than
+        // mute. Our own comings and goings are three-note arpeggios; other people's are a quick
+        // pair an octave up, so they stay out of the way.
         match self {
             Sound::Mute => &[Note(880.0, 0.0, 0.07), Note(660.0, 0.075, 0.1)],
             Sound::Unmute => &[Note(660.0, 0.0, 0.07), Note(880.0, 0.075, 0.1)],
             Sound::Deafen => &[Note(587.0, 0.0, 0.07), Note(440.0, 0.075, 0.12)],
             Sound::Undeafen => &[Note(440.0, 0.0, 0.07), Note(587.0, 0.075, 0.12)],
+            Sound::Join => &[Note(523.0, 0.0, 0.06), Note(659.0, 0.065, 0.06), Note(784.0, 0.13, 0.12)],
+            Sound::Leave => &[Note(784.0, 0.0, 0.06), Note(659.0, 0.065, 0.06), Note(523.0, 0.13, 0.12)],
+            Sound::Disconnected => &[Note(587.0, 0.0, 0.08), Note(466.0, 0.085, 0.08), Note(349.0, 0.17, 0.16)],
+            Sound::Moved => &[Note(659.0, 0.0, 0.06), Note(988.0, 0.065, 0.06), Note(659.0, 0.13, 0.1)],
+            Sound::UserJoin => &[Note(988.0, 0.0, 0.05), Note(1319.0, 0.055, 0.08)],
+            Sound::UserLeave => &[Note(1319.0, 0.0, 0.05), Note(988.0, 0.055, 0.08)],
+            Sound::CallEnded => &[Note(494.0, 0.0, 0.11), Note(392.0, 0.14, 0.18)],
+            Sound::PushToTalkOn => &[Note(1175.0, 0.0, 0.035)],
+            Sound::PushToTalkOff => &[Note(880.0, 0.0, 0.035)],
         }
+    }
+
+    /// How long the cue lasts, with a short tail of silence.
+    fn seconds(self) -> f32 {
+        self.notes()
+            .iter()
+            .map(|&Note(_, start, length)| start + length)
+            .fold(0.0, f32::max)
+            + TAIL
     }
 }
 
+/// A note: frequency in Hz, start and length in seconds.
+struct Note(f32, f32, f32);
+
 const RING: &[Note] = &[Note(659.0, 0.0, 0.16), Note(988.0, 0.18, 0.32)];
+/// What we hear while the others are being rung: two soft, low pulses.
+const RINGBACK: &[Note] = &[Note(440.0, 0.0, 0.3), Note(440.0, 0.4, 0.4)];
 
 /// Renders notes to interleaved stereo, each with a short attack and an exponential decay.
 fn render(notes: &[Note], seconds: f32) -> Vec<f32> {
@@ -86,7 +149,7 @@ pub fn play(sound: Sound, device_id: Option<String>) {
             Ok(playback) => playback,
             Err(e) => return warn!("failed to open the output for a sound: {e}"),
         };
-        let samples = render(sound.notes(), 0.3);
+        let samples = render(sound.notes(), sound.seconds());
         play_paced(&mut sink, &samples, Instant::now(), || true);
         // Let the device drain what is queued.
         thread::sleep(Duration::from_millis(150));
@@ -102,7 +165,17 @@ pub struct Ringer {
 }
 
 impl Ringer {
+    /// The ringtone of a call that is calling us.
     pub fn start(device_id: Option<String>) -> Self {
+        Self::repeat(render(RING, 0.5 + RING_PAUSE), device_id)
+    }
+
+    /// The ringback of a call we are in while the others are being rung.
+    pub fn ringback(device_id: Option<String>) -> Self {
+        Self::repeat(render(RINGBACK, 0.8 + RINGBACK_PAUSE), device_id)
+    }
+
+    fn repeat(samples: Vec<f32>, device_id: Option<String>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let spawned = thread::Builder::new().name("bardo-ringer".into()).spawn(move || {
@@ -110,8 +183,7 @@ impl Ringer {
                 Ok(playback) => playback,
                 Err(e) => return warn!("failed to open the output for the ringtone: {e}"),
             };
-            let ring = render(RING, 0.5 + RING_PAUSE);
-            while play_paced(&mut sink, &ring, Instant::now(), || !stopped.load(Ordering::Relaxed)) {}
+            while play_paced(&mut sink, &samples, Instant::now(), || !stopped.load(Ordering::Relaxed)) {}
         });
         if let Err(e) = spawned {
             warn!("failed to start the ringtone: {e}");
@@ -131,10 +203,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sounds_are_quiet_and_end_in_silence() {
-        for sound in [Sound::Mute, Sound::Unmute, Sound::Deafen, Sound::Undeafen] {
-            let samples = render(sound.notes(), 0.3);
-            assert_eq!(samples.len(), (0.3 * SAMPLE_RATE as f32) as usize * 2);
+    fn sounds_are_short_quiet_and_end_in_silence() {
+        for sound in Sound::ALL {
+            assert!(sound.seconds() <= 0.4, "{sound:?} lasts {}", sound.seconds());
+            let samples = render(sound.notes(), sound.seconds());
+            assert_eq!(samples.len(), (sound.seconds() * SAMPLE_RATE as f32) as usize * 2);
             let peak = samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
             assert!(peak > 0.05 && peak <= VOLUME * 1.25, "{sound:?} peaks at {peak}");
             assert!(samples[samples.len() - 2].abs() < 1e-3);
@@ -142,9 +215,30 @@ mod tests {
     }
 
     #[test]
-    fn the_ring_has_a_pause() {
+    fn notes_do_not_overlap() {
+        for sound in Sound::ALL {
+            for pair in sound.notes().windows(2) {
+                let (Note(_, start, length), Note(_, next, _)) = (&pair[0], &pair[1]);
+                assert!(start + length <= *next, "{sound:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sounds_are_distinct() {
+        let pitches = |sound: Sound| sound.notes().iter().map(|note| note.0 as u32).collect::<Vec<_>>();
+        for (i, &a) in Sound::ALL.iter().enumerate() {
+            for &b in &Sound::ALL[i + 1..] {
+                assert_ne!(pitches(a), pitches(b), "{a:?} and {b:?} sound alike");
+            }
+        }
+    }
+
+    #[test]
+    fn the_ring_and_the_ringback_have_a_pause() {
         let ring = render(RING, 0.5 + RING_PAUSE);
-        let pause = &ring[SAMPLE_RATE as usize * 2..];
-        assert!(pause.iter().all(|s| *s == 0.0));
+        assert!(ring[SAMPLE_RATE as usize * 2..].iter().all(|s| *s == 0.0));
+        let ringback = render(RINGBACK, 0.8 + RINGBACK_PAUSE);
+        assert!(ringback[(0.8 * SAMPLE_RATE as f32) as usize * 2..].iter().all(|s| *s == 0.0));
     }
 }

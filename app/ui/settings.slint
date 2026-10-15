@@ -11,6 +11,7 @@ export struct SettingsView {
     input-index: int,
     output-index: int,
     push-to-talk: bool,
+    ptt-sounds: bool,
     // Key caps of each hotkey, e.g. ["Ctrl", "M"].
     ptt-keys: [string],
     mute-keys: [string],
@@ -38,6 +39,7 @@ export global SettingsUi {
     callback select-input(int);
     callback select-output(int);
     callback set-push-to-talk(bool);
+    callback set-ptt-sounds(bool);
     callback capture-key(int);
     callback clear-key(int);
     callback set-threshold(float);
@@ -211,6 +213,14 @@ export component SettingsPage inherits Rectangle {
                             clear => { SettingsUi.clear-key(0); }
                         }
                     }
+                    if SettingsUi.view.push-to-talk: SettingRow {
+                        title: "Push-to-talk sounds";
+                        description: "A soft click when you press and release the key.";
+                        Toggle {
+                            checked: SettingsUi.view.ptt-sounds;
+                            toggled(on) => { SettingsUi.set-ptt-sounds(on); }
+                        }
+                    }
                     if !SettingsUi.view.push-to-talk: VerticalLayout {
                         spacing: 8px;
                         HorizontalLayout {
@@ -309,7 +319,7 @@ export component SettingsPage inherits Rectangle {
                     title: "APP";
                     SettingRow {
                         title: "Sounds";
-                        description: "A short sound when you mute or deafen, and a ringtone for calls.";
+                        description: "Short sounds when you mute or deafen, when people join or leave your channel, and for calls.";
                         Toggle {
                             checked: SettingsUi.view.sounds;
                             toggled(on) => { SettingsUi.set-sounds(on); }

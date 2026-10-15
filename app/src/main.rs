@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cue;
 #[cfg(debug_assertions)]
 mod demo;
 mod hotkey;
@@ -8,17 +9,24 @@ mod token;
 mod view;
 mod win;
 
-use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bardo_core::{
     AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest, Ringer,
     Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use tracing::warn;
+use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
+    cue::SoundGate,
     hotkey::{Action, Binding, Hotkeys},
     settings::{HotkeySettings, Settings, VoiceSettings},
     view::{Context, ListState},
@@ -32,6 +40,8 @@ const SCREEN_MAIN: i32 = 1;
 const NOTICE_DURATION: Duration = Duration::from_secs(8);
 /// How often the input level meter refreshes while the settings are open.
 const METER_INTERVAL: Duration = Duration::from_millis(50);
+/// How long the ringback plays while nobody answers.
+const RINGBACK_LIMIT: Duration = Duration::from_secs(60);
 
 /// Which hotkey a key capture is for; the index is what the settings page uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +92,17 @@ struct App {
     ringer: Option<Ringer>,
     /// The call that is ringing us, so a new one flashes the taskbar again.
     ringing: Option<Id>,
+    /// Plays while a call we are in rings the others.
+    ringback: Option<Ringback>,
+    sound_gate: SoundGate,
     /// Meters the microphone while the settings are open outside voice.
     mic_test: Option<MicTest>,
+}
+
+struct Ringback {
+    call: Id,
+    since: Instant,
+    ringer: Option<Ringer>,
 }
 
 thread_local! {
@@ -121,6 +140,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = slint::invoke_from_event_loop(move || match action {
                 Action::ToggleMute => toggle_mute(),
                 Action::ToggleDeafen => toggle_deafen(),
+                Action::PushToTalk(pressed) => push_to_talk_sound(pressed),
             });
         });
         apply_hotkeys(&hotkeys, &app.settings);
@@ -163,6 +183,8 @@ fn main() -> Result<(), slint::PlatformError> {
     wire_list(&window);
     wire_settings(&window);
 
+    #[cfg(debug_assertions)]
+    let _sound_demo = demo::sounds().then(run_sound_demo);
     #[cfg(debug_assertions)]
     if demo::enabled() {
         window.set_screen(if demo::login() { SCREEN_LOGIN } else { SCREEN_MAIN });
@@ -402,6 +424,10 @@ fn wire_settings(window: &MainWindow) {
         update_voice_settings(|voice, _| voice.push_to_talk = enabled);
         render_settings_now();
     });
+    ui.on_set_ptt_sounds(|enabled| {
+        update_voice_settings(|voice, _| voice.push_to_talk_sounds = enabled);
+        render_settings_now();
+    });
     ui.on_set_threshold(|threshold| update_voice_settings(|voice, _| voice.threshold_db = threshold));
     ui.on_set_input_volume(|volume| {
         let volume = volume.round().clamp(0.0, f32::from(settings::MAX_INPUT_VOLUME)) as u16;
@@ -443,6 +469,7 @@ fn wire_settings(window: &MainWindow) {
     });
     ui.on_set_sounds(|enabled| {
         update_voice_settings(|voice, _| voice.sounds = enabled);
+        with_window(update_ringing);
         render_settings_now();
     });
     ui.on_set_close_to_tray(|enabled| {
@@ -513,6 +540,7 @@ fn disconnect(window: &MainWindow, error: &str) {
         app.connection = None;
         app.ringer = None;
         app.ringing = None;
+        app.ringback = None;
         app.generation += 1;
         app.snapshot = Arc::default();
         app.speaking.clear();
@@ -560,6 +588,7 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
             }
         }
         ClientEvent::Notice(message) => show_notice(window, message),
+        ClientEvent::Sound(sound) => play(sound),
     }
 }
 
@@ -644,11 +673,12 @@ fn update_ringing(window: &MainWindow) {
     let is_new = APP.with_borrow_mut(|app| {
         let is_new = channel.is_some() && app.ringing != channel;
         app.ringing = channel;
-        if channel.is_none() {
+        if channel.is_none() || !sounds || deaf {
             app.ringer = None;
-        } else if is_new && sounds && !deaf {
-            app.ringer = Some(Ringer::start(device));
+        } else if is_new {
+            app.ringer = Some(Ringer::start(device.clone()));
         }
+        update_ringback(app, sounds && !deaf, device);
         is_new
     });
     if is_new {
@@ -656,10 +686,66 @@ fn update_ringing(window: &MainWindow) {
     }
 }
 
+/// Plays the ringback while a call we are in rings the others, for up to [`RINGBACK_LIMIT`].
+fn update_ringback(app: &mut App, audible: bool, device: Option<String>) {
+    let call = bardo_core::cues::ringback(&app.snapshot);
+    if app.ringback.as_ref().map(|ringback| ringback.call) != call {
+        app.ringback = call.map(|call| {
+            // Look again once the time is up.
+            slint::Timer::single_shot(RINGBACK_LIMIT + Duration::from_millis(100), || with_window(update_ringing));
+            Ringback { call, since: Instant::now(), ringer: None }
+        });
+    }
+    let Some(ringback) = &mut app.ringback else { return };
+    let audible = audible && ringback.since.elapsed() < RINGBACK_LIMIT;
+    if audible != ringback.ringer.is_some() {
+        ringback.ringer = audible.then(|| Ringer::ringback(device));
+    }
+}
+
+/// Plays `sound` on the chosen output, if sounds are on and it gets past the [`SoundGate`].
 fn play(sound: Sound) {
-    let (enabled, device) = APP.with_borrow(|app| (app.settings.voice.sounds, app.settings.voice.output_device.clone()));
-    if enabled {
+    let device = APP.with_borrow_mut(|app| {
+        let deaf = app.snapshot.self_deaf;
+        let admitted = app.settings.voice.sounds && app.sound_gate.admit(sound, deaf, Instant::now());
+        admitted.then(|| app.settings.voice.output_device.clone())
+    });
+    if let Some(device) = device {
+        debug!(?sound, "playing");
         bardo_core::play_sound(sound, device);
+    }
+}
+
+/// Feeds the sound demo's steps through the same path as the client's events.
+#[cfg(debug_assertions)]
+fn run_sound_demo() -> slint::Timer {
+    let steps = RefCell::new(demo::sound_script().into_iter());
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, Duration::from_millis(1200), move || {
+        let Some(step) = steps.borrow_mut().next() else { return };
+        with_window(|window| match step {
+            demo::Step::Sound(sound) => on_client_event(window, ClientEvent::Sound(sound)),
+            demo::Step::Snapshot(snapshot) => {
+                let previous = APP.with_borrow(|app| app.snapshot.clone());
+                for sound in bardo_core::cues::between(&previous, &snapshot) {
+                    on_client_event(window, ClientEvent::Sound(sound));
+                }
+                on_client_event(window, ClientEvent::Snapshot(Arc::new(*snapshot)));
+            }
+            demo::Step::Wait => {}
+        });
+    });
+    timer
+}
+
+fn push_to_talk_sound(pressed: bool) {
+    let wanted = APP.with_borrow(|app| {
+        let voice = &app.settings.voice;
+        let connected = app.snapshot.voice.as_ref().is_some_and(|voice| voice.status == VoiceStatus::Connected);
+        voice.push_to_talk && voice.push_to_talk_sounds && connected && !app.snapshot.self_mute
+    });
+    if wanted {
+        play(if pressed { Sound::PushToTalkOn } else { Sound::PushToTalkOff });
     }
 }
 
@@ -820,6 +906,7 @@ fn render_settings(window: &MainWindow) {
             input_index: index(&app.inputs, &voice.input_device),
             output_index: index(&app.outputs, &voice.output_device),
             push_to_talk: voice.push_to_talk,
+            ptt_sounds: voice.push_to_talk_sounds,
             ptt_keys: strings(voice.push_to_talk_key.map(hotkey::key_name)),
             mute_keys: keys(app.settings.hotkeys.toggle_mute),
             deafen_keys: keys(app.settings.hotkeys.toggle_deafen),

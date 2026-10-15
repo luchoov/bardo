@@ -557,6 +557,7 @@ mod tests {
             group: false,
             participants: vec![participant(200, "Bobby")],
             ringing_me: true,
+            ringing_others: false,
         }];
         snapshot.private_channels = vec![bardo_core::PrivateChannelView {
             id: Id(50),
