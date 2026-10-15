@@ -1,4 +1,9 @@
-use std::{collections::HashSet, sync::Arc, thread};
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 
 use bardo_api::{Http, MemberChange};
 use bardo_audio::TransmitControl;
@@ -17,6 +22,10 @@ use crate::{
 
 /// Op 8 accepts at most 100 user ids per request.
 const MEMBER_REQUEST_LIMIT: usize = 100;
+/// Time for the gateway to send our "leave voice" before the connection goes away.
+const LEAVE_FLUSH: Duration = Duration::from_millis(300);
+/// Upper bound on how long [`Client::shutdown`] waits.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -57,6 +66,7 @@ pub(crate) enum Internal {
 pub struct Client {
     shutdown: Option<oneshot::Sender<()>>,
     commands: mpsc::UnboundedSender<Command>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Client {
@@ -83,10 +93,27 @@ impl Client {
             };
             runtime.block_on(run(token, transmit, on_event, commands_rx, shutdown_rx));
         });
-        if let Err(e) = spawned {
-            error!("failed to spawn client thread: {e}");
+        let thread = match spawned {
+            Ok(thread) => Some(thread),
+            Err(e) => {
+                error!("failed to spawn client thread: {e}");
+                None
+            }
+        };
+        Self { shutdown: Some(shutdown_tx), commands: commands_tx, thread }
+    }
+
+    /// Disconnects and waits (briefly) until we have left voice. Dropping the client disconnects
+    /// without waiting, which is fine while the process keeps running.
+    pub fn shutdown(mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
         }
-        Self { shutdown: Some(shutdown_tx), commands: commands_tx }
+        let Some(thread) = self.thread.take() else { return };
+        let deadline = std::time::Instant::now() + SHUTDOWN_TIMEOUT;
+        while !thread.is_finished() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// Queues a command. Commands sent before the connection is up run once it is.
@@ -134,7 +161,13 @@ async fn run(
     let mut session = Session::new(internal_tx.clone(), transmit);
     loop {
         let first = tokio::select! {
-            _ = &mut shutdown => break,
+            _ = &mut shutdown => {
+                // Leave voice explicitly, or we would linger in the channel until Discord notices.
+                if session.leave_voice(&gateway, &on_event) {
+                    tokio::time::sleep(LEAVE_FLUSH).await;
+                }
+                break;
+            }
             Some(message) = internal.recv() => {
                 session.on_internal(message, &gateway, &on_event);
                 continue;
@@ -211,6 +244,14 @@ impl Session {
         let mut snapshot = Snapshot::build(&self.store);
         snapshot.voice = self.voice.view(&self.store);
         on_event(ClientEvent::Snapshot(Arc::new(snapshot)));
+    }
+
+    /// Leaves voice if we are in a channel. Returns whether we were.
+    fn leave_voice(&mut self, gateway: &Gateway, on_event: &impl Fn(ClientEvent)) -> bool {
+        let outcome = self.voice.leave();
+        let was_in_voice = outcome != Outcome::Nothing;
+        self.settle_voice(outcome, gateway, on_event);
+        was_in_voice
     }
 
     fn publish_speaking(&self, on_event: &impl Fn(ClientEvent)) {

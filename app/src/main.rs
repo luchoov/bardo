@@ -267,7 +267,11 @@ fn main() -> Result<(), slint::PlatformError> {
         Some(token) => connect(&window, token),
         None => window.set_screen(SCREEN_LOGIN),
     }
-    window.run()
+    let result = window.run();
+    if let Some(client) = APP.with_borrow_mut(|app| app.client.take()) {
+        client.shutdown();
+    }
+    result
 }
 
 fn connect(window: &MainWindow, token: String) {
