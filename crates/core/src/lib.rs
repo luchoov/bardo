@@ -5,6 +5,7 @@ mod client;
 pub mod cues;
 mod mic_test;
 pub mod permissions;
+mod qr_login;
 mod snapshot;
 mod store;
 mod voice;
@@ -13,6 +14,7 @@ pub use bardo_api::{MemberChange, Release};
 pub use bardo_gateway::{ConnectionState, Id};
 pub use client::{Client, ClientEvent, Command};
 pub use mic_test::{MicTest, MicTestKind, MicTestPhase};
+pub use qr_login::{QrLogin, QrLoginEvent};
 pub use snapshot::{
     CallView, ChannelView, FriendInVoice, GuildView, Moderation, Participant, PrivateChannelView, Snapshot,
     VoiceStatus, VoiceView,

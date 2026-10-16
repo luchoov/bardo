@@ -1,6 +1,7 @@
 use std::{fmt, time::Duration};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug)]
 pub enum Error {
@@ -14,6 +15,10 @@ pub enum Error {
     RateLimited(Duration),
     /// The token cannot be used as a header value.
     InvalidToken,
+    /// Discord wants a captcha solved before it goes on, which only its own apps can show.
+    CaptchaRequired,
+    /// Signing in with a QR code failed along the way.
+    RemoteAuth(String),
 }
 
 impl Error {
@@ -22,6 +27,18 @@ impl Error {
         struct Body {
             code: u64,
             message: String,
+        }
+        #[derive(Deserialize)]
+        struct Captcha {
+            #[serde(default)]
+            captcha_key: Option<Value>,
+            #[serde(default)]
+            captcha_sitekey: Option<Value>,
+        }
+        if let Ok(Captcha { captcha_key, captcha_sitekey }) = serde_json::from_slice(body)
+            && (captcha_key.is_some() || captcha_sitekey.is_some())
+        {
+            return Error::CaptchaRequired;
         }
         match serde_json::from_slice::<Body>(body) {
             Ok(body) => Error::Discord { status, code: body.code, message: body.message },
@@ -34,7 +51,8 @@ impl Error {
         match self {
             Error::Discord { status, .. } | Error::Status(status) => Some(*status),
             Error::RateLimited(_) => Some(429),
-            Error::Request(_) | Error::InvalidToken => None,
+            Error::CaptchaRequired => Some(400),
+            Error::Request(_) | Error::InvalidToken | Error::RemoteAuth(_) => None,
         }
     }
 }
@@ -47,6 +65,8 @@ impl fmt::Display for Error {
             Error::Status(status) => write!(f, "HTTP {status}"),
             Error::RateLimited(retry) => write!(f, "rate limited for {:.0} s", retry.as_secs_f64().ceil()),
             Error::InvalidToken => write!(f, "invalid token"),
+            Error::CaptchaRequired => write!(f, "Discord wants a captcha"),
+            Error::RemoteAuth(e) => write!(f, "QR sign-in failed: {e}"),
         }
     }
 }
@@ -78,5 +98,8 @@ mod tests {
 
         let error = Error::from_response(502, b"<html>Bad Gateway</html>");
         assert_eq!(error.to_string(), "HTTP 502");
+
+        let body = br#"{"captcha_key": ["captcha-required"], "captcha_sitekey": "abc", "captcha_service": "hcaptcha"}"#;
+        assert!(matches!(Error::from_response(400, body), Error::CaptchaRequired));
     }
 }

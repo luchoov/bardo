@@ -1,6 +1,6 @@
 import { Theme, Glyph } from "theme.slint";
 import {
-    Avatar, Button, ButtonKind, IconButton, MenuDivider, MenuRow, MenuSurface, ScrollArea, Slider, TextField,
+    Avatar, Button, ButtonKind, Icon, IconButton, MenuDivider, MenuRow, MenuSurface, ScrollArea, Slider, TextField,
 } from "controls.slint";
 import {
     Api, CallRow, ChannelRow, GuildRow, HintRow, MoreRow, ParticipantRow, PersonRow, PlaceRow, Row, RowKind,
@@ -101,76 +101,158 @@ export struct VoiceBar {
 
 component LoginView inherits Rectangle {
     in property <string> error;
+    // The QR code to scan, and how far signing in with it has got: 0 waiting for a code, 1 shown,
+    // 2 scanned, 3 not available.
+    in property <image> qr-code;
+    in property <int> qr-state;
+    in property <string> qr-status;
     callback submit(string);
     callback help();
 
     background: Theme.bg;
-    VerticalLayout {
-        alignment: center;
-        padding: 28px;
-        spacing: 12px;
-        HorizontalLayout {
-            alignment: center;
-            Image {
-                source: @image-url("../assets/icon.png");
-                width: 64px;
-                height: 64px;
-            }
-        }
-        Text {
-            text: "bardo";
-            color: Theme.text;
-            font-size: 24px;
-            font-weight: 700;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: "Discord voice, and nothing else.";
-            color: Theme.text-3;
-            font-size: 13px;
-            horizontal-alignment: center;
-        }
-        Rectangle { height: 12px; }
-        HorizontalLayout {
-            Text {
-                text: "Discord token";
-                color: Theme.text-2;
-                font-size: 12px;
-                horizontal-stretch: 1;
-            }
-            Text {
-                text: "How do I get it?";
-                color: help-touch.has-hover ? Theme.text : Theme.text-2;
-                font-size: 12px;
-                help-touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.help(); }
+    scroll := ScrollArea {
+        content-height: login.preferred-height;
+        login := VerticalLayout {
+            width: scroll.width;
+            height: self.preferred-height;
+            y: max(0px, (scroll.height - self.preferred-height) / 2);
+            padding: 28px;
+            padding-top: 24px;
+            spacing: 12px;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                Image {
+                    source: @image-url("../assets/icon.png");
+                    width: 32px;
+                    height: 32px;
+                }
+                Text {
+                    text: "bardo";
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 700;
+                    vertical-alignment: center;
                 }
             }
-        }
-        token := TextField {
-            password: true;
-            placeholder: "Paste your token";
-            accepted(text) => { root.submit(text); }
-        }
-        if root.error != "": Text {
-            text: root.error;
-            color: Theme.danger;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-        Button {
-            text: "Sign in";
-            kind: ButtonKind.primary;
-            enabled: token.text != "";
-            clicked => { root.submit(token.text); }
-        }
-        Text {
-            text: "The token stays on this PC, in Windows Credential Manager.";
-            color: Theme.text-3;
-            font-size: 11.5px;
-            horizontal-alignment: center;
-            wrap: word-wrap;
+            Text {
+                text: "Discord voice, and nothing else.";
+                color: Theme.text-3;
+                font-size: 13px;
+                horizontal-alignment: center;
+            }
+            Rectangle { height: 4px; }
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 188px;
+                    height: 188px;
+                    border-radius: 10px;
+                    background: root.qr-state == 3 ? Theme.raised : Theme.text;
+                    animate background { duration: Theme.medium; }
+                    if root.qr-state == 1 || root.qr-state == 2: Image {
+                        x: 14px;
+                        y: 14px;
+                        width: 160px;
+                        height: 160px;
+                        source: root.qr-code;
+                        image-rendering: pixelated;
+                        opacity: root.qr-state == 2 ? 0.12 : 1;
+                        animate opacity { duration: Theme.medium; }
+                    }
+                    if root.qr-state == 0: Text {
+                        text: "Getting a code…";
+                        color: Theme.bg.with-alpha(0.6);
+                        font-size: 12px;
+                    }
+                    if root.qr-state == 2: Icon {
+                        text: Glyph.phone;
+                        font-size: 40px;
+                        color: Theme.bg;
+                    }
+                    if root.qr-state == 3: Icon {
+                        text: Glyph.clear;
+                        font-size: 24px;
+                        color: Theme.text-3;
+                    }
+                }
+            }
+            Text {
+                text: root.qr-status != "" ? root.qr-status : "Scan it with the Discord app on your phone to sign in.";
+                color: root.qr-state == 3 || (root.qr-state == 0 && root.qr-status != "") ? Theme.warn
+                    : root.qr-state == 2 ? Theme.text : Theme.text-2;
+                font-size: 12px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                padding-top: 6px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+                Text {
+                    text: "or use a token";
+                    color: Theme.text-3;
+                    font-size: 11.5px;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+            }
+            HorizontalLayout {
+                Text {
+                    text: "Discord token";
+                    color: Theme.text-2;
+                    font-size: 12px;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: "How do I get it?";
+                    color: help-touch.has-hover ? Theme.text : Theme.text-2;
+                    font-size: 12px;
+                    help-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.help(); }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                token := TextField {
+                    password: true;
+                    placeholder: "Paste your token";
+                    accepted(text) => { root.submit(text); }
+                }
+                Button {
+                    text: "Sign in";
+                    enabled: token.text != "";
+                    clicked => { root.submit(token.text); }
+                }
+            }
+            if root.error != "": Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "The token stays on this PC, in Windows Credential Manager.";
+                color: Theme.text-3;
+                font-size: 11.5px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
         }
     }
 }
@@ -352,6 +434,9 @@ export component MainWindow inherits Window {
     in property <string> status;
     in property <bool> connected;
     in property <string> login-error;
+    in property <image> qr-code;
+    in property <int> qr-state;
+    in property <string> qr-status;
     // A transient message shown above the footer.
     in property <string> notice;
     in property <VoiceBar> voice;
@@ -419,6 +504,9 @@ export component MainWindow inherits Window {
 
         if root.screen == 0: LoginView {
             error: root.login-error;
+            qr-code: root.qr-code;
+            qr-state: root.qr-state;
+            qr-status: root.qr-status;
             submit(token) => { root.sign-in(token); }
             help => { root.open-token-guide(); }
         }

@@ -10,8 +10,9 @@ use bardo_gateway::{ClientProperties, Id};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use reqwest::{
     Method, StatusCode,
-    header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
+    header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, REFERER},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::time::{self, Instant};
 use tracing::{debug, warn};
@@ -185,6 +186,32 @@ impl Http {
     fn token(&self) -> RwLockReadGuard<'_, HeaderValue> {
         self.token.read().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// `POST /users/@me/remote-auth/login`: exchanges the ticket of a QR code sign-in for the token,
+/// encrypted for that session's key. Sent without a token, like from the web client's sign-in page.
+pub(crate) async fn remote_auth_login(properties: &ClientProperties, ticket: &str) -> Result<String, Error> {
+    #[derive(Deserialize)]
+    struct Body {
+        encrypted_token: String,
+    }
+
+    let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+    let mut headers = web_headers(properties);
+    headers.insert(REFERER, HeaderValue::from_static("https://discord.com/login"));
+    let response = client
+        .post(format!("{API_BASE}/users/@me/remote-auth/login"))
+        .headers(headers)
+        .header(CONTENT_TYPE, "application/json")
+        .body(json!({ "ticket": ticket }).to_string())
+        .send()
+        .await?;
+    let status = response.status().as_u16();
+    let bytes = response.bytes().await?;
+    if !(200..300).contains(&status) {
+        return Err(Error::from_response(status, &bytes));
+    }
+    serde_json::from_slice::<Body>(&bytes).map(|body| body.encrypted_token).map_err(|_| Error::Status(status))
 }
 
 fn token_header(token: &str) -> Result<HeaderValue, Error> {

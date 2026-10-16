@@ -5,6 +5,7 @@ mod cue;
 mod demo;
 mod hotkey;
 mod logging;
+mod qr;
 mod settings;
 mod token;
 mod view;
@@ -20,7 +21,8 @@ use std::{
 
 use bardo_core::{
     AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest,
-    MicTestKind, MicTestPhase, Release, Ringer, Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
+    MicTestKind, MicTestPhase, QrLogin, QrLoginEvent, Release, Ringer, Snapshot, Sound, TransmitControl,
+    UserAudio, VoiceStatus,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{debug, warn};
@@ -36,6 +38,11 @@ slint::include_modules!();
 
 const SCREEN_LOGIN: i32 = 0;
 const SCREEN_MAIN: i32 = 1;
+/// The sign-in QR code: waiting for one, showing it, scanned, or not available.
+const QR_WAITING: i32 = 0;
+const QR_SHOWN: i32 = 1;
+const QR_SCANNED: i32 = 2;
+const QR_UNAVAILABLE: i32 = 3;
 /// How long an error notice stays up.
 const NOTICE_DURATION: Duration = Duration::from_secs(8);
 /// How often the input level meter refreshes while the settings are open.
@@ -103,6 +110,10 @@ struct App {
     mic_test_kind: MicTestKind,
     /// A newer version, offered for download.
     update: Option<Release>,
+    /// Signing in with a QR code, while the sign-in screen is up.
+    qr_login: Option<QrLogin>,
+    /// Bumped whenever QR sign-in starts or stops, so events from an older one are ignored.
+    qr_generation: u64,
 }
 
 struct Ringback {
@@ -207,6 +218,9 @@ fn main() -> Result<(), slint::PlatformError> {
             app.settings.ephemeral = true;
             app.settings.servers.pinned = demo::pinned();
         });
+        if demo::login() {
+            start_qr_login(&window);
+        }
         if demo::update() {
             window.set_update_version("0.2.0".into());
         }
@@ -274,7 +288,10 @@ fn save_geometry(window: &MainWindow) {
 fn start(window: &MainWindow) {
     match token::load() {
         Some(token) => connect(window, token),
-        None => window.set_screen(SCREEN_LOGIN),
+        None => {
+            window.set_screen(SCREEN_LOGIN);
+            start_qr_login(window);
+        }
     }
 }
 
@@ -290,20 +307,9 @@ fn wire_main(window: &MainWindow) {
     window.on_sign_in({
         let weak = window.as_weak();
         move |input| {
-            let Some(window) = weak.upgrade() else { return };
-            if APP.with_borrow(|app| app.settings.ephemeral) {
-                window.set_login_error("This is the demo: nothing is stored.".into());
-                return;
+            if let Some(window) = weak.upgrade() {
+                sign_in(&window, &input);
             }
-            let Some(token) = token::normalize(&input) else {
-                window.set_login_error("That doesn't look like a token.".into());
-                return;
-            };
-            if let Err(e) = token::save(&token) {
-                window.set_login_error(format!("Could not store the token: {e}").into());
-                return;
-            }
-            connect(&window, token);
         }
     });
 
@@ -565,7 +571,81 @@ fn wire_settings(window: &MainWindow) {
     });
 }
 
+/// Signs in with a token, pasted or from a QR code.
+fn sign_in(window: &MainWindow, input: &str) {
+    if APP.with_borrow(|app| app.settings.ephemeral) {
+        window.set_login_error("This is the demo: nothing is stored.".into());
+        return;
+    }
+    let Some(token) = token::normalize(input) else {
+        window.set_login_error("That doesn't look like a token.".into());
+        return;
+    };
+    if let Err(e) = token::save(&token) {
+        window.set_login_error(format!("Could not store the token: {e}").into());
+        return;
+    }
+    connect(window, token);
+}
+
+/// Shows QR codes to sign in with until the sign-in screen goes away.
+fn start_qr_login(window: &MainWindow) {
+    window.set_qr_state(QR_WAITING);
+    window.set_qr_status("".into());
+    let (generation, demo) = APP.with_borrow_mut(|app| {
+        app.qr_generation += 1;
+        (app.qr_generation, app.settings.ephemeral)
+    });
+    if demo {
+        on_qr_event(window, QrLoginEvent::Code("https://discord.com/ra/bardo-demo".into()));
+        return;
+    }
+    let weak = window.as_weak();
+    let login = QrLogin::start(move |event| {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let current = APP.with_borrow(|app| app.qr_generation);
+            if let (Some(window), true) = (weak.upgrade(), current == generation) {
+                on_qr_event(&window, event);
+            }
+        });
+    });
+    APP.with_borrow_mut(|app| app.qr_login = Some(login));
+}
+
+fn stop_qr_login() {
+    APP.with_borrow_mut(|app| {
+        app.qr_login = None;
+        app.qr_generation += 1;
+    });
+}
+
+fn on_qr_event(window: &MainWindow, event: QrLoginEvent) {
+    match event {
+        QrLoginEvent::Code(code) => {
+            match qr::image(&code) {
+                Some(image) => {
+                    window.set_qr_code(image);
+                    window.set_qr_state(QR_SHOWN);
+                }
+                None => warn!("could not draw the sign-in QR code"),
+            }
+            window.set_qr_status("".into());
+        }
+        QrLoginEvent::Scanned { username } => {
+            window.set_qr_state(QR_SCANNED);
+            window.set_qr_status(format!("Confirm on your phone to sign in as {username}.").into());
+        }
+        QrLoginEvent::Token(token) => sign_in(window, &token),
+        QrLoginEvent::Problem { message, retrying } => {
+            window.set_qr_state(if retrying { QR_WAITING } else { QR_UNAVAILABLE });
+            window.set_qr_status(message.into());
+        }
+    }
+}
+
 fn connect(window: &MainWindow, token: String) {
+    stop_qr_login();
     window.set_login_error("".into());
     window.set_notice("".into());
     window.set_screen(SCREEN_MAIN);
@@ -619,6 +699,7 @@ fn disconnect(window: &MainWindow, error: &str) {
     render_all();
     window.set_login_error(error.into());
     window.set_screen(SCREEN_LOGIN);
+    start_qr_login(window);
 }
 
 fn on_client_event(window: &MainWindow, event: ClientEvent) {

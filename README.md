@@ -77,8 +77,9 @@ You can keep the official client for text and close it while you play.
 bardo is not made by or affiliated with Discord. Logging in from an unofficial client is against
 Discord's Terms of Service, and Discord could ban the account. Use it knowing that.
 
-It signs in with your account's token. [This guide](docs/token.md) shows how to get it. The token
-is kept in Windows Credential Manager and only sent to Discord. Besides Discord, bardo makes one
+To sign in, scan the QR code on bardo's sign-in screen with the Discord app on your phone, or paste
+your account's token ([this guide](docs/token.md) shows how to get it). Either way bardo ends up
+with the token, keeps it in Windows Credential Manager and only sends it to Discord. Besides Discord, bardo makes one
 request per start to GitHub, to see whether there is a newer version.
 
 The exe is not code-signed, so the first time you run it Windows SmartScreen warns about it: click

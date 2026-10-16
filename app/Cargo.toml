@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 bardo-core = { version = "0.1.0", path = "../crates/core" }
 keyring-core = "1.0.1"
+qrcode = { version = "0.14.1", default-features = false }
 # The process-wide crypto provider for reqwest, installed by main().
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }

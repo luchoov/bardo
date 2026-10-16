@@ -22,7 +22,8 @@ Redistributable. The code is formatted by hand at about 120 columns; `cargo fmt`
 ```
 crates/
   gateway/  Main WebSocket: identify, heartbeat, resume, READY, voice states, op 4
-  api/      Minimal REST: moderation (PATCH member), DM calls, member data, bardo's own releases
+  api/      Minimal REST: moderation (PATCH member), DM calls, member data, bardo's own releases;
+            QR code sign-in (remote authentication gateway)
   voice/    Voice connection on top of songbird
   audio/    WASAPI capture and playback, mixing, per-user volume, RNNoise, VAD, sounds
   core/     State, effective permissions and orchestration; a command/event API for the UI

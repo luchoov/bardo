@@ -8,12 +8,16 @@ publish.workspace = true
 [dependencies]
 bardo-gateway = { version = "0.1.0", path = "../gateway" }
 base64 = "0.22.1"
+futures-util = "0.3.34"
 iana-time-zone = "0.1.65"
 # No crypto provider of its own: the app installs ring, which songbird and the gateway already use.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2", "gzip", "brotli", "deflate"] }
+rsa = { version = "0.9.8", features = ["getrandom"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tokio = { version = "1.53.3", features = ["sync", "time"] }
+sha2 = "0.10.9"
+tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
