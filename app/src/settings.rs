@@ -17,6 +17,8 @@ pub const DEFAULT_VOLUME: u16 = 100;
 pub const MAX_VOLUME: u16 = 200;
 /// Input volume range in percent, like the official client's.
 pub const MAX_INPUT_VOLUME: u16 = 200;
+/// bardo's own sounds can only be turned down.
+pub const MAX_SOUNDS_VOLUME: u16 = 100;
 /// What [`VoiceSettings::learned_gain`] keeps the system default microphone under.
 const DEFAULT_INPUT_KEY: &str = "default";
 
@@ -129,6 +131,8 @@ pub struct VoiceSettings {
     pub self_deaf: bool,
     /// Short sounds for mute and deafen, people joining and leaving, and calls.
     pub sounds: bool,
+    /// Volume of those sounds in percent, 0–100.
+    pub sounds_volume: u16,
     /// The gain automatic gain control learned for each microphone, in dB, keyed by device id, so
     /// a voice session starts where the last one left off.
     pub learned_gain: BTreeMap<String, f32>,
@@ -138,6 +142,11 @@ impl VoiceSettings {
     /// The linear gain for [`Self::input_volume`].
     pub fn input_gain(&self) -> f32 {
         f32::from(self.input_volume.min(MAX_INPUT_VOLUME)) / 100.0
+    }
+
+    /// The linear gain for [`Self::sounds_volume`].
+    pub fn sounds_gain(&self) -> f32 {
+        f32::from(self.sounds_volume.min(MAX_SOUNDS_VOLUME)) / 100.0
     }
 
     /// What automatic gain control learned for the chosen microphone.
@@ -176,6 +185,7 @@ impl Default for VoiceSettings {
             self_mute: false,
             self_deaf: false,
             sounds: true,
+            sounds_volume: MAX_SOUNDS_VOLUME,
             learned_gain: BTreeMap::new(),
         }
     }
@@ -296,6 +306,9 @@ mod tests {
         assert!(settings.voice.noise_suppression);
         assert!(settings.voice.auto_gain);
         assert_eq!(settings.voice.input_gain(), 1.0);
+        assert_eq!(settings.voice.sounds_gain(), 1.0);
+        let settings: Settings = serde_json::from_str(r#"{"voice": {"sounds_volume": 40}}"#).unwrap();
+        assert_eq!(settings.voice.sounds_gain(), 0.4);
         assert!(settings.window.close_to_tray);
         assert_eq!(settings.hotkeys, HotkeySettings::default());
         assert!(settings.appearance.profile_pictures && settings.show_pictures());

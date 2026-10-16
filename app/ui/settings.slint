@@ -34,6 +34,8 @@ export global SettingsUi {
     in-out property <float> threshold;
     // Microphone volume in percent.
     in-out property <float> input-volume;
+    // Volume of bardo's own sounds in percent.
+    in-out property <float> sounds-volume;
     // Input level in dBFS, refreshed while the page is open.
     in property <float> level;
     // Whether the microphone would be sent right now, refreshed with the level.
@@ -55,6 +57,7 @@ export global SettingsUi {
     callback clear-key(int);
     callback set-threshold(float);
     callback set-input-volume(float);
+    callback set-sounds-volume(float);
     callback set-noise-suppression(bool);
     callback set-auto-gain(bool);
     callback set-autostart(bool);
@@ -443,6 +446,29 @@ export component SettingsPage inherits Rectangle {
                         Toggle {
                             checked: SettingsUi.view.sounds;
                             toggled(on) => { SettingsUi.set-sounds(on); }
+                        }
+                    }
+                    if SettingsUi.view.sounds: VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            Text {
+                                text: "Sounds volume";
+                                color: Theme.text-2;
+                                font-size: 12px;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: round(SettingsUi.sounds-volume) + "%";
+                                color: Theme.text;
+                                font-size: 12px;
+                            }
+                        }
+                        Slider {
+                            minimum: 0;
+                            maximum: 100;
+                            step: 5;
+                            value <=> SettingsUi.sounds-volume;
+                            changed(value) => { SettingsUi.set-sounds-volume(value); }
                         }
                     }
                     SettingRow {

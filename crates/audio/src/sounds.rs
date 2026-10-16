@@ -129,6 +129,15 @@ fn render(notes: &[Note], seconds: f32) -> Vec<f32> {
     samples
 }
 
+/// Turns rendered samples down (or up) by `volume`.
+fn scaled(mut samples: Vec<f32>, volume: f32) -> Vec<f32> {
+    let volume = volume.clamp(0.0, 1.0);
+    if volume != 1.0 {
+        samples.iter_mut().for_each(|sample| *sample *= volume);
+    }
+    samples
+}
+
 /// Feeds `samples` to the device in 20 ms frames, paced in real time, while `keep_going` says so.
 /// Returns whether it played to the end.
 pub fn play_paced(
@@ -148,14 +157,18 @@ pub fn play_paced(
     true
 }
 
-/// Plays a cue on the output device with `device_id` (or the default one), in the background.
-pub fn play(sound: Sound, device_id: Option<String>) {
+/// Plays a cue on the output device with `device_id` (or the default one), in the background,
+/// at `volume` (1.0 as made).
+pub fn play(sound: Sound, device_id: Option<String>, volume: f32) {
+    if volume <= 0.0 {
+        return;
+    }
     let spawned = thread::Builder::new().name("bardo-sound".into()).spawn(move || {
         let (_playback, mut sink) = match Playback::start(device_id.as_deref(), || {}) {
             Ok(playback) => playback,
             Err(e) => return warn!("failed to open the output for a sound: {e}"),
         };
-        let samples = render(sound.notes(), sound.seconds());
+        let samples = scaled(render(sound.notes(), sound.seconds()), volume);
         play_paced(&mut sink, &samples, Instant::now(), || true);
         // Let the device drain what is queued.
         thread::sleep(Duration::from_millis(150));
@@ -171,14 +184,14 @@ pub struct Ringer {
 }
 
 impl Ringer {
-    /// The ringtone of a call that is calling us.
-    pub fn start(device_id: Option<String>) -> Self {
-        Self::repeat(render(RING, 0.5 + RING_PAUSE), device_id)
+    /// The ringtone of a call that is calling us, at `volume` (1.0 as made).
+    pub fn start(device_id: Option<String>, volume: f32) -> Self {
+        Self::repeat(scaled(render(RING, 0.5 + RING_PAUSE), volume), device_id)
     }
 
-    /// The ringback of a call we are in while the others are being rung.
-    pub fn ringback(device_id: Option<String>) -> Self {
-        Self::repeat(render(RINGBACK, 0.8 + RINGBACK_PAUSE), device_id)
+    /// The ringback of a call we are in while the others are being rung, at `volume`.
+    pub fn ringback(device_id: Option<String>, volume: f32) -> Self {
+        Self::repeat(scaled(render(RINGBACK, 0.8 + RINGBACK_PAUSE), volume), device_id)
     }
 
     fn repeat(samples: Vec<f32>, device_id: Option<String>) -> Self {
@@ -218,6 +231,18 @@ mod tests {
             assert!(peak > 0.05 && peak <= VOLUME * 1.25, "{sound:?} peaks at {peak}");
             assert!(samples[samples.len() - 2].abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn volume_scales_the_samples() {
+        let samples = render(Sound::Join.notes(), Sound::Join.seconds());
+        let peak = |samples: &[f32]| samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        let half = scaled(samples.clone(), 0.5);
+        assert!((peak(&half) - peak(&samples) / 2.0).abs() < 1e-6);
+        assert_eq!(scaled(samples.clone(), 1.0), samples);
+        assert_eq!(peak(&scaled(samples.clone(), 0.0)), 0.0);
+        // Never louder than made.
+        assert_eq!(scaled(samples.clone(), 3.0), samples);
     }
 
     #[test]

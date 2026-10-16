@@ -48,7 +48,7 @@ and calls, and nothing else.
   have the permissions.
 - DM and group calls: call, answer, decline.
 - Lives in the tray and can start with Windows. Short, quiet sounds for joins, leaves, mute and
-  deafen.
+  deafen, with a volume of their own.
 - Voice is end-to-end encrypted (DAVE), like in the official client.
 
 ## bardo and Discord side by side

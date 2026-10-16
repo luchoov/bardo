@@ -424,6 +424,7 @@ fn wire_settings(window: &MainWindow) {
                 app.outputs = bardo_core::output_devices();
                 ui.set_threshold(app.settings.voice.threshold_db);
                 ui.set_input_volume(f32::from(app.settings.voice.input_volume));
+                ui.set_sounds_volume(f32::from(app.settings.voice.sounds_volume));
             });
             render_settings(&window);
             window.set_settings_open(true);
@@ -507,6 +508,12 @@ fn wire_settings(window: &MainWindow) {
     ui.on_set_input_volume(|volume| {
         let volume = volume.round().clamp(0.0, f32::from(settings::MAX_INPUT_VOLUME)) as u16;
         update_voice_settings(|voice, _| voice.input_volume = volume);
+    });
+    ui.on_set_sounds_volume(|volume| {
+        let volume = volume.round().clamp(0.0, f32::from(settings::MAX_SOUNDS_VOLUME)) as u16;
+        update_voice_settings(|voice, _| voice.sounds_volume = volume);
+        // A taste of the new volume; the sound gate keeps a drag from turning into a burst.
+        play(Sound::UserJoin);
     });
     ui.on_set_noise_suppression(|enabled| {
         update_voice_settings(|voice, _| voice.noise_suppression = enabled);
@@ -843,10 +850,11 @@ fn stop_mic_test(app: &mut App) {
 
 /// Starts or stops the ringtone, and shows who is calling.
 fn update_ringing(window: &MainWindow) {
-    let (calling, deaf, sounds, device) = APP.with_borrow(|app| {
+    let (calling, deaf, sounds, output) = APP.with_borrow(|app| {
         let in_voice = app.snapshot.voice.as_ref().map(|voice| voice.channel_id);
         let calling = app.snapshot.calls.iter().find(|call| call.ringing_me && in_voice != Some(call.channel_id));
-        (calling.cloned(), app.snapshot.self_deaf, app.settings.voice.sounds, app.settings.voice.output_device.clone())
+        let voice = &app.settings.voice;
+        (calling.cloned(), app.snapshot.self_deaf, voice.sounds, (voice.output_device.clone(), voice.sounds_gain()))
     });
     window.set_incoming(match &calling {
         Some(call) => IncomingCall {
@@ -865,9 +873,9 @@ fn update_ringing(window: &MainWindow) {
         if channel.is_none() || !sounds || deaf {
             app.ringer = None;
         } else if is_new {
-            app.ringer = Some(Ringer::start(device.clone()));
+            app.ringer = Some(Ringer::start(output.0.clone(), output.1));
         }
-        update_ringback(app, sounds && !deaf, device);
+        update_ringback(app, sounds && !deaf, output);
         is_new
     });
     if is_new {
@@ -876,7 +884,8 @@ fn update_ringing(window: &MainWindow) {
 }
 
 /// Plays the ringback while a call we are in rings the others, for up to [`RINGBACK_LIMIT`].
-fn update_ringback(app: &mut App, audible: bool, device: Option<String>) {
+/// `output`: the device and the volume.
+fn update_ringback(app: &mut App, audible: bool, output: (Option<String>, f32)) {
     let call = bardo_core::cues::ringback(&app.snapshot);
     if app.ringback.as_ref().map(|ringback| ringback.call) != call {
         app.ringback = call.map(|call| {
@@ -888,20 +897,20 @@ fn update_ringback(app: &mut App, audible: bool, device: Option<String>) {
     let Some(ringback) = &mut app.ringback else { return };
     let audible = audible && ringback.since.elapsed() < RINGBACK_LIMIT;
     if audible != ringback.ringer.is_some() {
-        ringback.ringer = audible.then(|| Ringer::ringback(device));
+        ringback.ringer = audible.then(|| Ringer::ringback(output.0, output.1));
     }
 }
 
 /// Plays `sound` on the chosen output, if sounds are on and it gets past the [`SoundGate`].
 fn play(sound: Sound) {
-    let device = APP.with_borrow_mut(|app| {
-        let deaf = app.snapshot.self_deaf;
-        let admitted = app.settings.voice.sounds && app.sound_gate.admit(sound, deaf, Instant::now());
-        admitted.then(|| app.settings.voice.output_device.clone())
+    let output = APP.with_borrow_mut(|app| {
+        let (deaf, voice) = (app.snapshot.self_deaf, &app.settings.voice);
+        let admitted = voice.sounds && app.sound_gate.admit(sound, deaf, Instant::now());
+        admitted.then(|| (voice.output_device.clone(), voice.sounds_gain()))
     });
-    if let Some(device) = device {
+    if let Some((device, volume)) = output {
         debug!(?sound, "playing");
-        bardo_core::play_sound(sound, device);
+        bardo_core::play_sound(sound, device, volume);
     }
 }
 
