@@ -13,5 +13,5 @@ pub use bootstrap::client_properties;
 pub use cdn::Cdn;
 pub use error::Error;
 pub use http::{Http, MemberChange};
-pub use release::{Release, newer_release};
+pub use release::{Package, Release, download as download_release, newer_release};
 pub use remote_auth::{RemoteAuthEvent, remote_auth};

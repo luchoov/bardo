@@ -81,7 +81,8 @@ Discord's Terms of Service, and Discord could ban the account. Use it knowing th
 To sign in, scan the QR code on bardo's sign-in screen with the Discord app on your phone, or paste
 your account's token ([this guide](docs/token.md) shows how to get it). Either way bardo ends up
 with the token, keeps it in Windows Credential Manager and only sends it to Discord. Besides Discord, bardo makes one
-request per start to GitHub, to see whether there is a newer version.
+request per start to GitHub, to see whether there is a newer version, and downloads it from there
+when you ask it to update.
 
 The exe is not code-signed, so the first time you run it Windows SmartScreen warns about it: click
 "More info" and then "Run anyway". Some antivirus programs may flag it too, because it reads the
@@ -95,7 +96,8 @@ only checks the keys you bound. You can read the source and build it yourself.
 - **Portable** (`bardo.exe`): a single file that runs from anywhere. If you turn on "Start with
   Windows" and then move the file, turn it on again.
 
-bardo tells you when a new version is out. Settings are in `%APPDATA%\bardo`.
+bardo tells you when a new version is out. Click "Update" and it downloads it, checks it against the
+release's checksums, and restarts on the new version. Settings are in `%APPDATA%\bardo` and stay.
 
 ## Bug reports
 

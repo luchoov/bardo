@@ -9,6 +9,7 @@ mod pictures;
 mod qr;
 mod settings;
 mod token;
+mod update;
 mod view;
 mod win;
 
@@ -22,8 +23,8 @@ use std::{
 
 use bardo_core::{
     AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest,
-    MicTestKind, MicTestPhase, QrLogin, QrLoginEvent, Release, Ringer, Snapshot, Sound, TransmitControl,
-    UserAudio, VoiceStatus,
+    MicTestKind, MicTestPhase, Package, QrLogin, QrLoginEvent, Release, Ringer, Snapshot, Sound, TransmitControl,
+    UpdateEvent, UserAudio, VoiceStatus,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{debug, warn};
@@ -45,6 +46,12 @@ const QR_WAITING: i32 = 0;
 const QR_SHOWN: i32 = 1;
 const QR_SCANNED: i32 = 2;
 const QR_UNAVAILABLE: i32 = 3;
+/// The new-version bar: offering it, downloading it, or failed to.
+const UPDATE_OFFERED: i32 = 0;
+const UPDATE_DOWNLOADING: i32 = 1;
+const UPDATE_FAILED: i32 = 2;
+/// How long a freshly updated bardo waits for the old one to exit.
+const UPDATE_HANDOVER: Duration = Duration::from_secs(10);
 /// How long an error notice stays up.
 const NOTICE_DURATION: Duration = Duration::from_secs(8);
 /// How often the input level meter refreshes while the settings are open.
@@ -112,6 +119,8 @@ struct App {
     mic_test_kind: MicTestKind,
     /// A newer version, offered for download.
     update: Option<Release>,
+    /// A downloaded update, started once bardo has closed.
+    pending_update: Option<update::Pending>,
     /// Signing in with a QR code, while the sign-in screen is up.
     qr_login: Option<QrLogin>,
     /// Bumped whenever QR sign-in starts or stops, so events from an older one are ignored.
@@ -140,6 +149,10 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let start_in_tray = std::env::args().any(|arg| arg == win::TRAY_ARG);
+    // Started by the bardo it replaces, which is still closing.
+    if let Some(pid) = update::replaced_process() {
+        win::wait_for_exit(pid, UPDATE_HANDOVER);
+    }
     win::use_dark_menus();
     let window = MainWindow::new()?;
     // The demo may run next to a real bardo, e.g. to take screenshots.
@@ -157,6 +170,7 @@ fn main() -> Result<(), slint::PlatformError> {
     if !claimed {
         return Ok(());
     }
+    update::clean_up();
 
     APP.with_borrow_mut(|app| {
         app.window = Some(window.as_weak());
@@ -263,6 +277,11 @@ fn main() -> Result<(), slint::PlatformError> {
     if let Some(client) = APP.with_borrow_mut(|app| app.client.take()) {
         client.shutdown();
     }
+    if let Some(pending) = APP.with_borrow_mut(|app| app.pending_update.take()) {
+        update::launch(pending);
+        // The installer replaces the exe, so leave at once rather than tearing down the rest.
+        std::process::exit(0);
+    }
     Ok(())
 }
 
@@ -318,10 +337,15 @@ fn wire_main(window: &MainWindow) {
     });
 
     window.on_open_token_guide(|| win::open(TOKEN_GUIDE));
-    window.on_open_update(|| {
-        let url = APP.with_borrow(|app| app.update.as_ref().map(|release| release.url.clone()));
-        win::open(url.as_deref().unwrap_or(concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest")));
+    window.on_install_update({
+        let weak = window.as_weak();
+        move || {
+            if let Some(window) = weak.upgrade() {
+                install_update(&window);
+            }
+        }
     });
+    window.on_open_update(open_release_page);
 
     window.on_dismiss_notice({
         let weak = window.as_weak();
@@ -771,8 +795,59 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
         ClientEvent::Notice(message) => show_notice(window, message),
         ClientEvent::Sound(sound) => play(sound),
         ClientEvent::UpdateAvailable(release) => {
+            // A reconnect checks again; a download under way carries on.
+            if window.get_update_state() != UPDATE_DOWNLOADING {
+                window.set_update_state(UPDATE_OFFERED);
+            }
             window.set_update_version(release.version.as_str().into());
             APP.with_borrow_mut(|app| app.update = Some(release));
+        }
+    }
+}
+
+fn open_release_page() {
+    let url = APP.with_borrow(|app| app.update.as_ref().map(|release| release.url.clone()));
+    win::open(url.as_deref().unwrap_or(concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest")));
+}
+
+/// Downloads the newer version, then closes bardo so it can take over.
+fn install_update(window: &MainWindow) {
+    let Some(release) = APP.with_borrow(|app| app.update.clone()) else {
+        return open_release_page();
+    };
+    window.set_update_progress(0.0);
+    window.set_update_state(UPDATE_DOWNLOADING);
+    let package = update::package();
+    let mut shown = 0;
+    bardo_core::download_update(release, package, move |event| {
+        // Only whole percents reach the UI.
+        if let UpdateEvent::Progress(done) = event {
+            let percent = (done * 100.0) as u32;
+            if percent == shown {
+                return;
+            }
+            shown = percent;
+        }
+        let _ = slint::invoke_from_event_loop(move || with_window(|window| on_update_event(window, package, event)));
+    });
+}
+
+fn on_update_event(window: &MainWindow, package: Package, event: UpdateEvent) {
+    match event {
+        UpdateEvent::Progress(done) => window.set_update_progress(done),
+        UpdateEvent::Downloaded(bytes) => match update::prepare(package, &bytes) {
+            Ok(pending) => {
+                APP.with_borrow_mut(|app| app.pending_update = Some(pending));
+                let _ = slint::quit_event_loop();
+            }
+            Err(e) => {
+                warn!("failed to put the update in place: {e}");
+                window.set_update_state(UPDATE_FAILED);
+            }
+        },
+        UpdateEvent::Failed(e) => {
+            warn!("failed to download the update: {e}");
+            window.set_update_state(UPDATE_FAILED);
         }
     }
 }

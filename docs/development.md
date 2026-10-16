@@ -79,8 +79,10 @@ Settings (voice, hotkeys, pinned servers, per-user volume and local mutes) are s
 2. `git tag -a v0.2.0 -m "Release notes"` and `git push origin v0.2.0`.
 
 The release workflow checks that the tag matches the version, builds the exe and the installer, and
-publishes both with their SHA-256 checksums. The tag's message becomes the release notes. Installed
-copies of bardo offer the new version the next time they start.
+publishes both with their SHA-256 checksums. The tag's message becomes the release notes. Running
+copies of bardo offer the new version the next time they sign in, and "Update" installs it: an
+installed bardo runs the new installer silently, a portable one swaps its own exe. Both start again
+when done. Keep the asset names, since bardo looks for them by name.
 
 ## References
 

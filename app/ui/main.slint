@@ -257,9 +257,14 @@ component LoginView inherits Rectangle {
     }
 }
 
-// A newer bardo is out.
+// A newer bardo is out: offered, downloading, or failed to download.
 component UpdateBar inherits Rectangle {
     in property <string> version;
+    // 0 offered, 1 downloading, 2 failed.
+    in property <int> state;
+    // The fraction downloaded.
+    in property <float> progress;
+    callback install();
     callback open();
     callback dismiss();
 
@@ -273,19 +278,28 @@ component UpdateBar inherits Rectangle {
         padding-left: 12px;
         spacing: 2px;
         Text {
-            text: "bardo " + root.version + " is out";
+            text: root.state == 1 ? "Downloading bardo " + root.version + "… " + Math.round(root.progress * 100) + "%"
+                : root.state == 2 ? "Could not update bardo"
+                : "bardo " + root.version + " is out";
             color: Theme.text;
             font-size: 12px;
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
         }
-        Button {
+        if root.state == 0: Button {
+            text: "Update";
+            kind: ButtonKind.ghost;
+            clicked => { root.install(); }
+        }
+        if root.state == 2: Button {
             text: "Download";
             kind: ButtonKind.ghost;
             clicked => { root.open(); }
         }
+        // Hidden but still in place while downloading, so the bar keeps its height.
         IconButton {
+            visible: root.state != 1;
             glyph: Glyph.clear;
             size: 30px;
             glyph-size: 10px;
@@ -452,9 +466,12 @@ export component MainWindow inherits Window {
     in property <IncomingCall> incoming;
     // A newer version, until dismissed.
     in-out property <string> update-version;
+    in property <int> update-state;
+    in property <float> update-progress;
     in-out property <string> search;
     callback sign-in(string);
     callback open-token-guide();
+    callback install-update();
     callback open-update();
     callback dismiss-notice();
     callback toggle-mute();
@@ -547,6 +564,9 @@ export component MainWindow inherits Window {
                 padding-bottom: root.incoming.active ? 0px : 4px;
                 UpdateBar {
                     version: root.update-version;
+                    state: root.update-state;
+                    progress: root.update-progress;
+                    install => { root.install-update(); }
                     open => { root.open-update(); }
                     dismiss => { root.update-version = ""; }
                 }

@@ -1,17 +1,17 @@
 //! Windows integration: dark native menus, starting with Windows, a single running instance,
-//! bringing the window to the front and opening links.
+//! bringing the window to the front, opening links and waiting for another process.
 
-use std::{ffi::c_void, iter, path::Path, ptr, thread};
+use std::{ffi::c_void, iter, path::Path, ptr, thread, time::Duration};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::warn;
 use windows_sys::Win32::{
-    Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, HWND, POINT},
+    Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, HWND, POINT},
     Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint},
     System::{
         LibraryLoader::{GetProcAddress, LoadLibraryW},
         Registry::{HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW},
-        Threading::{CreateEventW, INFINITE, SetEvent, WaitForSingleObject},
+        Threading::{CreateEventW, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, SetEvent, WaitForSingleObject},
     },
     UI::{
         Shell::ShellExecuteW,
@@ -190,6 +190,20 @@ pub fn open(target: &str) {
     // Anything up to 32 is an error code.
     if result as usize <= 32 {
         warn!("failed to open {target}: error {}", result as usize);
+    }
+}
+
+/// Waits up to `timeout` for the process `pid` to exit. Returns at once if it already has.
+pub fn wait_for_exit(pid: u32, timeout: Duration) {
+    // SAFETY: a plain call; a null handle means the process is gone or not ours to see.
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if process.is_null() {
+        return;
+    }
+    // SAFETY: waits on and then closes the handle just opened.
+    unsafe {
+        WaitForSingleObject(process, timeout.as_millis().min(u32::MAX as u128) as u32);
+        CloseHandle(process);
     }
 }
 

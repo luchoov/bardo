@@ -48,7 +48,8 @@ Name: "{userprograms}\bardo"; Filename: "{app}\bardo.exe"
 Name: "{userdesktop}\bardo"; Filename: "{app}\bardo.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\bardo.exe"; Description: "Open bardo"; Flags: nowait postinstall skipifsilent
+; Also when silent: that is how bardo updates itself, and it should start again afterwards.
+Filename: "{app}\bardo.exe"; Description: "Open bardo"; Flags: nowait postinstall
 
 [Code]
 // bardo adds this itself when "Start with Windows" is on; it goes with bardo.

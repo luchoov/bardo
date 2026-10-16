@@ -9,9 +9,10 @@ pub mod permissions;
 mod qr_login;
 mod snapshot;
 mod store;
+mod update;
 mod voice;
 
-pub use bardo_api::{MemberChange, Release};
+pub use bardo_api::{MemberChange, Package, Release};
 pub use bardo_gateway::{ConnectionState, Id};
 pub use cdn::CdnFetcher;
 pub use client::{Client, ClientEvent, Command};
@@ -25,4 +26,5 @@ pub use bardo_audio::{
     AudioDevice, DEFAULT_THRESHOLD_DB, Ringer, SILENCE_DB, Sound, TransmitControl, input_devices, output_devices,
     play_sound,
 };
+pub use update::{UpdateEvent, download_update};
 pub use voice::{AudioDevices, UserAudio};
