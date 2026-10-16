@@ -195,6 +195,7 @@ pub fn snapshot() -> Snapshot {
     let participant = |id: u64, name: &str| Participant {
         user_id: Id(id),
         name: name.to_owned(),
+        avatar: None,
         self_mute: false,
         self_deaf: false,
         server_mute: false,
@@ -223,6 +224,7 @@ pub fn snapshot() -> Snapshot {
         GuildView {
             id: Id(1),
             name: "La Dictadura".to_owned(),
+            icon: None,
             channels: vec![
                 limited(10, "Contador Público", 20, vec![
                     Participant { is_me: true, ..participant(100, "LuchovG") },
@@ -243,6 +245,7 @@ pub fn snapshot() -> Snapshot {
         GuildView {
             id: Id(2),
             name: "Schnitzel Squad".to_owned(),
+            icon: None,
             channels: vec![
                 channel(20, "Lounge", vec![stranger(110, "Klausi"), stranger(111, "mic_off_again")]),
                 channel(21, "Beer garden", Vec::new()),
@@ -253,6 +256,7 @@ pub fn snapshot() -> Snapshot {
         GuildView {
             id: Id(3),
             name: "Clutch or Kick".to_owned(),
+            icon: None,
             channels: (0..12)
                 .map(|n| {
                     let people = match n {
@@ -267,6 +271,7 @@ pub fn snapshot() -> Snapshot {
         GuildView {
             id: Id(4),
             name: "Rustaceans".to_owned(),
+            icon: None,
             channels: vec![channel(40, "General", Vec::new()), channel(41, "Pair programming", Vec::new())],
         },
     ];
@@ -278,6 +283,7 @@ pub fn snapshot() -> Snapshot {
                 friends_in_voice.push(FriendInVoice {
                     user_id: participant.user_id,
                     name: participant.name.clone(),
+                    avatar: participant.avatar.clone(),
                     guild_id: guild.id,
                     guild_name: guild.name.clone(),
                     channel_id: channel.id,
@@ -337,5 +343,6 @@ pub fn snapshot() -> Snapshot {
         self_deaf: false,
         friends_in_voice,
         me: Some((Id(100), "LuchovG".to_owned())),
+        me_avatar: None,
     }
 }

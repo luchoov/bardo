@@ -33,9 +33,24 @@ pub struct Settings {
     pub window: WindowSettings,
     #[serde(default)]
     pub servers: ServerSettings,
+    #[serde(default)]
+    pub appearance: AppearanceSettings,
     /// Changes are kept in memory only (the demo).
     #[serde(skip)]
     pub ephemeral: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceSettings {
+    /// Profile pictures and server icons, downloaded from Discord's CDN. Off, initials stand in.
+    pub profile_pictures: bool,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self { profile_pictures: true }
+    }
 }
 
 /// Which servers are listed in full, and how.
@@ -215,6 +230,11 @@ impl Settings {
         }
     }
 
+    /// Whether to show profile pictures and server icons. The demo keeps to initials.
+    pub fn show_pictures(&self) -> bool {
+        self.appearance.profile_pictures && !self.ephemeral
+    }
+
     pub fn user(&self, user_id: Id) -> UserAudio {
         self.users.get(&user_id).copied().unwrap_or_default()
     }
@@ -278,6 +298,11 @@ mod tests {
         assert_eq!(settings.voice.input_gain(), 1.0);
         assert!(settings.window.close_to_tray);
         assert_eq!(settings.hotkeys, HotkeySettings::default());
+        assert!(settings.appearance.profile_pictures && settings.show_pictures());
+        let settings: Settings = serde_json::from_str(r#"{"appearance": {}}"#).unwrap();
+        assert!(settings.appearance.profile_pictures);
+        let settings: Settings = serde_json::from_str(r#"{"appearance": {"profile_pictures": false}}"#).unwrap();
+        assert!(!settings.show_pictures());
     }
 
     #[test]

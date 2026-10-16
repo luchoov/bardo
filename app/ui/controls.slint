@@ -35,6 +35,8 @@ export component SlashedIcon inherits Rectangle {
 
 export component Avatar inherits Rectangle {
     in property <string> initial;
+    // Shown instead of the initial once it is here.
+    in property <image> picture;
     in property <bool> speaking;
     in property <length> size: 24px;
     width: self.size;
@@ -51,7 +53,8 @@ export component Avatar inherits Rectangle {
         height: root.size - 6px;
         border-radius: self.width / 2;
         background: Theme.avatar;
-        Text {
+        clip: true;
+        if root.picture.width == 0: Text {
             text: root.initial;
             color: Theme.text-2;
             font-size: root.size * 0.4;
@@ -59,6 +62,37 @@ export component Avatar inherits Rectangle {
             horizontal-alignment: center;
             vertical-alignment: center;
         }
+        if root.picture.width > 0: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.picture;
+            image-fit: cover;
+        }
+    }
+}
+
+// A server's icon next to its name, or its initial.
+export component ServerIcon inherits Rectangle {
+    in property <string> initial;
+    in property <image> picture;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: Theme.avatar;
+    clip: true;
+    if root.picture.width == 0: Text {
+        text: root.initial;
+        color: Theme.text-2;
+        font-size: 9px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.picture.width > 0: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.picture;
+        image-fit: cover;
     }
 }
 

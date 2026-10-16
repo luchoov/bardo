@@ -21,6 +21,7 @@ export struct SettingsView {
     noise-suppression: bool,
     auto-gain: bool,
     sounds: bool,
+    profile-pictures: bool,
     autostart: bool,
     close-to-tray: bool,
     account: string,
@@ -56,6 +57,7 @@ export global SettingsUi {
     callback set-auto-gain(bool);
     callback set-autostart(bool);
     callback set-sounds(bool);
+    callback set-profile-pictures(bool);
     callback set-close-to-tray(bool);
     callback open-logs();
     callback sign-out();
@@ -367,6 +369,14 @@ export component SettingsPage inherits Rectangle {
                         Toggle {
                             checked: SettingsUi.view.sounds;
                             toggled(on) => { SettingsUi.set-sounds(on); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Profile pictures";
+                        description: "Pictures of people and server icons, from Discord. Off, initials stand in.";
+                        Toggle {
+                            checked: SettingsUi.view.profile-pictures;
+                            toggled(on) => { SettingsUi.set-profile-pictures(on); }
                         }
                     }
                     SettingRow {

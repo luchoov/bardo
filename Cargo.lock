@@ -540,6 +540,7 @@ name = "bardo"
 version = "0.1.0"
 dependencies = [
  "bardo-core",
+ "image",
  "keyring-core",
  "qrcode",
  "raw-window-handle",
@@ -594,6 +595,7 @@ dependencies = [
  "bardo-gateway",
  "bardo-voice",
  "rtrb",
+ "rustls 0.23.46",
  "serde_json",
  "tokio",
  "tracing",
@@ -3410,6 +3412,7 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",

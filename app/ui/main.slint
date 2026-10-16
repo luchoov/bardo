@@ -347,6 +347,7 @@ component VoiceCard inherits Rectangle {
 component UserPanel inherits Rectangle {
     in property <string> name;
     in property <string> initial;
+    in property <image> picture;
     in property <bool> speaking;
     in property <bool> connected;
     in property <string> status;
@@ -367,6 +368,7 @@ component UserPanel inherits Rectangle {
             Avatar {
                 size: 34px;
                 initial: root.initial;
+                picture: root.picture;
                 speaking: root.speaking;
             }
         }
@@ -442,6 +444,7 @@ export component MainWindow inherits Window {
     in property <VoiceBar> voice;
     in property <string> me-name;
     in property <string> me-initial;
+    in property <image> me-picture;
     in property <bool> me-speaking;
     in property <bool> self-mute;
     in property <bool> self-deaf;
@@ -659,6 +662,7 @@ export component MainWindow inherits Window {
             UserPanel {
                 name: root.me-name;
                 initial: root.me-initial;
+                picture: root.me-picture;
                 speaking: root.me-speaking;
                 connected: root.connected;
                 status: root.status;
@@ -692,6 +696,7 @@ export component MainWindow inherits Window {
                         Avatar {
                             size: 30px;
                             initial: root.menu-row.initial;
+                            picture: root.menu-row.picture;
                         }
                         VerticalLayout {
                             alignment: center;

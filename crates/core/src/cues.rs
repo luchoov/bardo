@@ -103,6 +103,7 @@ mod tests {
         Participant {
             user_id,
             name: user_id.to_string(),
+            avatar: None,
             self_mute: false,
             self_deaf: false,
             server_mute: false,
@@ -140,6 +141,7 @@ mod tests {
             guilds: vec![GuildView {
                 id: GUILD,
                 name: String::new(),
+                icon: None,
                 channels: vec![channel(CHANNEL, users), channel(OTHER_CHANNEL, elsewhere)],
             }],
             voice: status.and_then(|status| voice(Some(GUILD), CHANNEL, status)),

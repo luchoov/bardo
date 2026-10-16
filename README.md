@@ -39,6 +39,7 @@ and calls, and nothing else.
 </p>
 
 - Shows your servers' voice channels and who is in each, live, with friends in voice at the top.
+  Profile pictures and server icons can be turned off.
 - Joins a channel with one click. `Ctrl+K` searches every channel and everyone in voice.
 - Push-to-talk or voice activity, with noise suppression and automatic gain control. A microphone
   test plays you back live, or records a few seconds and plays them the way others hear you.

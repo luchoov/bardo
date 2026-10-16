@@ -5,6 +5,7 @@ mod cue;
 mod demo;
 mod hotkey;
 mod logging;
+mod pictures;
 mod qr;
 mod settings;
 mod token;
@@ -30,6 +31,7 @@ use tracing::{debug, warn};
 use crate::{
     cue::SoundGate,
     hotkey::{Action, Binding, Hotkeys},
+    pictures::Pictures,
     settings::{HotkeySettings, Settings, VoiceSettings},
     view::{Context, ListState},
 };
@@ -114,6 +116,8 @@ struct App {
     qr_login: Option<QrLogin>,
     /// Bumped whenever QR sign-in starts or stops, so events from an older one are ignored.
     qr_generation: u64,
+    /// Profile pictures and server icons fetched so far.
+    pictures: Pictures,
 }
 
 struct Ringback {
@@ -547,6 +551,14 @@ fn wire_settings(window: &MainWindow) {
         if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
             warn!("failed to open {}: {e}", dir.display());
         }
+    });
+    ui.on_set_profile_pictures(|enabled| {
+        update_settings(|settings| settings.appearance.profile_pictures = enabled);
+        if !enabled {
+            APP.with_borrow_mut(|app| app.pictures.clear());
+        }
+        render_all();
+        render_settings_now();
     });
     ui.on_set_close_to_tray(|enabled| {
         update_settings(|settings| settings.window.close_to_tray = enabled);
@@ -1113,6 +1125,7 @@ fn render_settings(window: &MainWindow) {
             noise_suppression: voice.noise_suppression,
             auto_gain: voice.auto_gain,
             sounds: voice.sounds,
+            profile_pictures: app.settings.appearance.profile_pictures,
             autostart: win::autostart_enabled(),
             close_to_tray: app.settings.window.close_to_tray,
             account: app.snapshot.me.as_ref().map(|(_, name)| name.as_str()).unwrap_or_default().into(),
@@ -1134,10 +1147,17 @@ fn render_all() {
 
 /// Rebuilds the list, and tells the client which guilds are on screen.
 fn render() {
-    let watched = APP.with_borrow(|app| {
+    let (mut rows, watched) = APP.with_borrow(|app| {
         let cx = Context { snapshot: &app.snapshot, settings: &app.settings, speaking: &app.speaking, list: &app.list };
-        app.rows.set_vec(view::rows(&cx));
-        view::watched_guilds(&cx)
+        (view::rows(&cx), view::watched_guilds(&cx))
+    });
+    APP.with_borrow_mut(|app| {
+        for row in rows.iter_mut().filter(|row| !row.picture_path.is_empty()) {
+            if let Some(picture) = app.pictures.get(&row.picture_path, picture_arrived) {
+                row.picture = picture;
+            }
+        }
+        app.rows.set_vec(rows);
     });
     let changed = APP.with_borrow_mut(|app| {
         let changed = app.watched != watched;
@@ -1147,6 +1167,30 @@ fn render() {
     if changed {
         send(Command::SetWatchedGuilds(watched));
     }
+}
+
+/// A picture was fetched: shows it wherever it is wanted.
+fn picture_arrived(path: String, pixels: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>) {
+    let Some(picture) = APP.with_borrow_mut(|app| app.pictures.arrived(path.clone(), pixels)) else { return };
+    APP.with_borrow(|app| {
+        for index in 0..app.rows.row_count() {
+            let Some(mut row) = app.rows.row_data(index) else { continue };
+            if row.picture_path == path {
+                row.picture = picture.clone();
+                app.rows.set_row_data(index, row);
+            }
+        }
+    });
+    with_window(render_me_picture);
+}
+
+/// Our own picture in the user panel.
+fn render_me_picture(window: &MainWindow) {
+    let picture = APP.with_borrow_mut(|app| {
+        let path = app.snapshot.me_avatar.as_ref().filter(|_| app.settings.show_pictures())?.path.clone();
+        app.pictures.get(&path, picture_arrived)
+    });
+    window.set_me_picture(picture.unwrap_or_default());
 }
 
 /// Refreshes only the speaking flags, which change several times a second.
@@ -1185,6 +1229,7 @@ fn render_status(window: &MainWindow) {
         window.set_self_mute(app.snapshot.self_mute);
         window.set_self_deaf(app.snapshot.self_deaf);
     });
+    render_me_picture(window);
 }
 
 fn render_voice(window: &MainWindow) {

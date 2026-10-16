@@ -19,6 +19,7 @@ pub struct Snapshot {
     pub friends_in_voice: Vec<FriendInVoice>,
     /// Our own user id and name, once known.
     pub me: Option<(Id, String)>,
+    pub me_avatar: Option<CdnImage>,
     /// Calls in DMs and groups that have someone in them or are ringing us.
     pub calls: Vec<CallView>,
     /// DMs and groups we can call, most recently active first.
@@ -45,10 +46,51 @@ pub struct PrivateChannelView {
     pub recipients: Vec<Id>,
 }
 
+/// A picture on Discord's CDN: a profile picture or a server icon.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CdnImage {
+    /// The path without extension, e.g. `avatars/{user_id}/{hash}`. The hash comes last.
+    pub path: String,
+}
+
+impl CdnImage {
+    const BASE: &str = "https://cdn.discordapp.com/";
+
+    fn new(path: String) -> Self {
+        Self { path }
+    }
+
+    /// A user's own profile picture.
+    pub fn avatar(user_id: Id, hash: &str) -> Self {
+        Self::new(format!("avatars/{user_id}/{hash}"))
+    }
+
+    /// A user's profile picture for one server, which takes precedence over their own there.
+    pub fn member_avatar(guild_id: Id, user_id: Id, hash: &str) -> Self {
+        Self::new(format!("guilds/{guild_id}/users/{user_id}/avatars/{hash}"))
+    }
+
+    pub fn icon(guild_id: Id, hash: &str) -> Self {
+        Self::new(format!("icons/{guild_id}/{hash}"))
+    }
+
+    /// The image `size` pixels wide. Animated pictures come as their first frame.
+    pub fn url(&self, size: u32) -> String {
+        format!("{}{}.webp?size={size}", Self::BASE, self.path)
+    }
+
+    /// A hash never changes content, so it names the file in the disk cache.
+    pub fn file_name(&self, size: u32) -> String {
+        let hash = self.path.rsplit('/').next().unwrap_or_default();
+        format!("{hash}-{size}.webp")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FriendInVoice {
     pub user_id: Id,
     pub name: String,
+    pub avatar: Option<CdnImage>,
     pub guild_id: Id,
     pub guild_name: String,
     pub channel_id: Id,
@@ -83,6 +125,7 @@ pub struct VoiceView {
 pub struct GuildView {
     pub id: Id,
     pub name: String,
+    pub icon: Option<CdnImage>,
     pub channels: Vec<ChannelView>,
 }
 
@@ -107,6 +150,7 @@ impl GuildView {
 pub struct Participant {
     pub user_id: Id,
     pub name: String,
+    pub avatar: Option<CdnImage>,
     pub self_mute: bool,
     pub self_deaf: bool,
     pub server_mute: bool,
@@ -155,6 +199,7 @@ impl Snapshot {
                 (!channels.is_empty()).then(|| GuildView {
                     id: guild.id,
                     name: guild.name.clone(),
+                    icon: guild.icon.as_deref().map(|hash| CdnImage::icon(guild.id, hash)),
                     channels,
                 })
             })
@@ -164,6 +209,7 @@ impl Snapshot {
             guilds,
             friends_in_voice,
             me: Some((me.id, me.display_name().to_owned())),
+            me_avatar: store.avatar(None, me.id),
             calls: calls(store, me.id),
             private_channels: private_channels(store),
             ..Self::default()
@@ -199,6 +245,7 @@ fn call_participant(store: &Store, state: &VoiceState, me: Id) -> Participant {
     Participant {
         user_id: state.user_id,
         name: store.user_name(state.user_id),
+        avatar: store.avatar(None, state.user_id),
         self_mute: state.self_mute,
         self_deaf: state.self_deaf,
         server_mute: state.mute,
@@ -238,6 +285,7 @@ fn friends_in_voice(store: &Store, guilds: &[GuildView]) -> Vec<FriendInVoice> {
                 friends.push(FriendInVoice {
                     user_id: participant.user_id,
                     name: store.friend_name(participant.user_id).unwrap_or_else(|| participant.name.clone()),
+                    avatar: participant.avatar.clone(),
                     guild_id: guild.id,
                     guild_name: guild.name.clone(),
                     channel_id: channel.id,
@@ -284,6 +332,7 @@ fn voice_channels(store: &Store, guild: &Guild, me: Id) -> Vec<ChannelView> {
                     name: store
                         .display_name(guild, state.user_id)
                         .unwrap_or_else(|| state.user_id.to_string()),
+                    avatar: store.avatar(Some(guild), state.user_id),
                     self_mute: state.self_mute,
                     self_deaf: state.self_deaf,
                     server_mute: state.mute,
@@ -454,6 +503,34 @@ mod tests {
 
         store.apply(Event::RelationshipRemove(serde_json::from_str(r#"{"id": "2", "type": 1}"#).unwrap()));
         assert!(Snapshot::build(&store).friends_in_voice.is_empty());
+    }
+
+    #[test]
+    fn profile_pictures_prefer_the_server_one() {
+        let mut store = store();
+        let update = |avatar: &str| {
+            let user = r#"{"id": "2", "username": "zed", "avatar": "a_own"}"#;
+            let member = format!(r#"{{"guild_id": "10", "user": {user}, "avatar": {avatar}}}"#);
+            Event::GuildMemberUpdate(serde_json::from_str(&member).unwrap())
+        };
+        store.apply(update("null"));
+        let zed = participant(&Snapshot::build(&store), Id(21), Id(2)).avatar.unwrap();
+        assert_eq!(zed.url(64), "https://cdn.discordapp.com/avatars/2/a_own.webp?size=64");
+
+        store.apply(update(r#""here""#));
+        let zed = participant(&Snapshot::build(&store), Id(21), Id(2)).avatar.unwrap();
+        assert_eq!(zed.url(64), "https://cdn.discordapp.com/guilds/10/users/2/avatars/here.webp?size=64");
+        assert_eq!(zed.file_name(64), "here-64.webp");
+        assert!(participant(&Snapshot::build(&store), Id(21), Id(3)).avatar.is_none());
+
+        let mut properties: bardo_gateway::GuildProperties =
+            serde_json::from_str(r#"{"id": "10", "name": "Guild", "icon": "abc", "owner_id": "99"}"#).unwrap();
+        store.apply(Event::GuildUpdate(properties.clone()));
+        let icon = Snapshot::build(&store).guilds[0].icon.clone().unwrap();
+        assert_eq!(icon.url(32), "https://cdn.discordapp.com/icons/10/abc.webp?size=32");
+        properties.icon = None;
+        store.apply(Event::GuildUpdate(properties));
+        assert!(Snapshot::build(&store).guilds[0].icon.is_none());
     }
 
     fn participant(snapshot: &Snapshot, channel: Id, user: Id) -> Participant {

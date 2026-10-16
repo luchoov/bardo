@@ -7,6 +7,8 @@ use bardo_gateway::{
     channel_kind, relationship_kind,
 };
 
+use crate::snapshot::CdnImage;
+
 #[derive(Default)]
 pub struct Store {
     pub me: Option<User>,
@@ -154,6 +156,17 @@ impl Store {
             .and_then(|m| m.user.as_ref())
             .or_else(|| self.users.get(&user_id))
             .map(|user| user.display_name().to_owned())
+    }
+
+    /// A user's profile picture: their picture for `guild` if they set one, else their own.
+    pub fn avatar(&self, guild: Option<&Guild>, user_id: Id) -> Option<CdnImage> {
+        if let Some(guild) = guild
+            && let Some(hash) = guild.members.get(&user_id).and_then(|member| member.avatar.as_ref())
+        {
+            return Some(CdnImage::member_avatar(guild.id, user_id, hash));
+        }
+        let hash = self.users.get(&user_id)?.avatar.as_ref()?;
+        Some(CdnImage::avatar(user_id, hash))
     }
 
     /// Users in voice channels whose name we cannot resolve, grouped by guild, for the guilds

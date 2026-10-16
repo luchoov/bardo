@@ -1,7 +1,7 @@
 // The rows of the main list: section headings, friends in voice, servers, channels, participants.
 
 import { Theme, Glyph } from "theme.slint";
-import { Avatar, Badge, Caption, Icon, IconButton, SlashedIcon } from "controls.slint";
+import { Avatar, Badge, Caption, Icon, IconButton, ServerIcon, SlashedIcon } from "controls.slint";
 
 export enum RowKind {
     // A heading such as "Friends in voice"; `expanded` and `collapsible` apply.
@@ -48,6 +48,9 @@ export struct Row {
     // Our channel, or someone in it.
     current: bool,
     initial: string,
+    // A profile picture or server icon: its CDN path, and the picture once it is here.
+    picture-path: string,
+    picture: image,
     self-mute: bool,
     self-deaf: bool,
     server-mute: bool,
@@ -184,6 +187,7 @@ export component PersonRow inherits RowBase {
             Avatar {
                 size: 30px;
                 initial: root.item.initial;
+                picture: root.item.picture;
                 speaking: root.item.speaking;
             }
         }
@@ -237,6 +241,13 @@ export component GuildRow inherits RowBase {
             font-size: 8px;
             text: root.item.expanded ? Glyph.chevron-down : Glyph.chevron-right;
             color: Theme.text-3;
+        }
+        if root.item.initial != "": VerticalLayout {
+            alignment: center;
+            ServerIcon {
+                initial: root.item.initial;
+                picture: root.item.picture;
+            }
         }
         Text {
             text: root.item.label;
@@ -333,6 +344,7 @@ export component ParticipantRow inherits RowBase {
             Avatar {
                 size: 24px;
                 initial: root.item.initial;
+                picture: root.item.picture;
                 speaking: root.item.speaking;
             }
         }

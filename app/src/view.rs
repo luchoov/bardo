@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use bardo_core::{CallView, ChannelView, FriendInVoice, GuildView, Id, Participant, Snapshot};
+use bardo_core::{CallView, CdnImage, ChannelView, FriendInVoice, GuildView, Id, Participant, Snapshot};
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::{
@@ -221,6 +221,11 @@ fn section(key: &str, label: &str, count: usize, expanded: Option<bool>) -> Row 
     }
 }
 
+/// The CDN path of a picture to show, if pictures are on.
+fn picture(cx: &Context, image: Option<&CdnImage>) -> SharedString {
+    image.filter(|_| cx.settings.show_pictures()).map(|image| image.path.as_str().into()).unwrap_or_default()
+}
+
 fn call_rows(cx: &Context, call: &CallView, rows: &mut Vec<Row>) {
     let current = cx.current_channel() == Some(call.channel_id);
     let others = call.participants.iter().filter(|p| !p.is_me).count();
@@ -253,6 +258,7 @@ fn call_rows(cx: &Context, call: &CallView, rows: &mut Vec<Row>) {
             channel_id: id(call.channel_id),
             current,
             initial: initial(&participant.name).into(),
+            picture_path: picture(cx, participant.avatar.as_ref()),
             self_mute: participant.self_mute,
             self_deaf: participant.self_deaf,
             live: participant.streaming,
@@ -285,6 +291,9 @@ fn guild_rows(cx: &Context, guild: &GuildView, expanded: bool, rows: &mut Vec<Ro
         expanded,
         pinned: cx.settings.servers.is_pinned(guild.id),
         show_empty,
+        // With pictures on, a server without an icon gets its initial in the icon's place.
+        initial: if cx.settings.show_pictures() { initial(&guild.name).into() } else { SharedString::new() },
+        picture_path: picture(cx, guild.icon.as_ref()),
         count: guild.voice_count() as i32,
         ..Default::default()
     });
@@ -352,6 +361,7 @@ fn participant_fields(cx: &Context, guild: &GuildView, channel: &ChannelView, pa
         can_connect: channel.can_connect,
         current,
         initial: initial(&participant.name).into(),
+        picture_path: picture(cx, participant.avatar.as_ref()),
         self_mute: participant.self_mute,
         self_deaf: participant.self_deaf,
         server_mute: participant.server_mute,
@@ -398,6 +408,7 @@ fn friend_row(cx: &Context, friend: &FriendInVoice) -> Row {
         channel_id: id(friend.channel_id),
         can_connect: friend.can_connect,
         initial: initial(&friend.name).into(),
+        picture_path: picture(cx, friend.avatar.as_ref()),
         self_mute: friend.self_mute,
         self_deaf: friend.self_deaf,
         live: friend.streaming,
@@ -429,6 +440,7 @@ mod tests {
         Participant {
             user_id: Id(id),
             name: name.to_owned(),
+            avatar: Some(CdnImage::avatar(Id(id), "hash")),
             self_mute: false,
             self_deaf: false,
             server_mute: false,
@@ -451,6 +463,7 @@ mod tests {
                 GuildView {
                     id: Id(1),
                     name: "Home".to_owned(),
+                    icon: Some(CdnImage::icon(Id(1), "home")),
                     channels: vec![
                         channel(10, "General", vec![participant(100, "Ana")]),
                         channel(11, "Empty", Vec::new()),
@@ -460,12 +473,14 @@ mod tests {
                 GuildView {
                     id: Id(2),
                     name: "Big public server".to_owned(),
+                    icon: None,
                     channels: vec![channel(20, "Lobby", vec![participant(200, "Bob")])],
                 },
             ],
             friends_in_voice: vec![FriendInVoice {
                 user_id: Id(200),
                 name: "Bobby".to_owned(),
+                avatar: None,
                 guild_id: Id(2),
                 guild_name: "Big public server".to_owned(),
                 channel_id: Id(20),
@@ -578,6 +593,25 @@ mod tests {
         // Bob, in voice in a server, can be called in his DM.
         let bob = rows.iter().find(|row| row.kind == RowKind::Person).unwrap();
         assert_eq!(bob.call_id, "50");
+    }
+
+    #[test]
+    fn pictures_are_shown_unless_turned_off() {
+        let mut settings = Settings::default();
+        settings.servers.set_pinned(Id(1), true);
+        let list = ListState { other_open: Some(true), ..Default::default() };
+        let (snapshot, speaking) = (snapshot(), HashSet::new());
+        let pictures = |settings: &Settings| {
+            let cx = Context { snapshot: &snapshot, settings, speaking: &speaking, list: &list };
+            rows(&cx)
+                .iter()
+                .filter(|row| matches!(row.kind, RowKind::Guild | RowKind::Participant))
+                .map(|row| format!("{} {} {}", row.label, row.initial, row.picture_path))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pictures(&settings), ["Home H icons/1/home", "Ana A avatars/100/hash", "Big public server B "]);
+        settings.appearance.profile_pictures = false;
+        assert_eq!(pictures(&settings), ["Home  ", "Ana A ", "Big public server  "]);
     }
 
     #[test]
