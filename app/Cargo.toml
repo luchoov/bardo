@@ -7,7 +7,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-bardo-core = { version = "0.1.0", path = "../crates/core" }
+bardo-core = { version = "0.2.0", path = "../crates/core" }
 # Decodes profile pictures; slint already brings it, this adds WebP, which the CDN serves.
 image = { version = "0.25.10", default-features = false, features = ["webp"] }
 keyring-core = "1.0.1"
