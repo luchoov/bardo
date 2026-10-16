@@ -1,0 +1,5 @@
+# The C runtime is linked in, so bardo.exe runs on a fresh Windows without the Visual C++ Redistributable.
+# Opus's CMake build still compiles for the DLL runtime; that only costs a linker warning (LNK4217),
+# and the exe imports no runtime DLL.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

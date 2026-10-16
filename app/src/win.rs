@@ -1,5 +1,5 @@
-//! Windows integration: dark native menus, starting with Windows, a single running instance and
-//! bringing the window to the front.
+//! Windows integration: dark native menus, starting with Windows, a single running instance,
+//! bringing the window to the front and opening links.
 
 use std::{ffi::c_void, iter, path::Path, ptr, thread};
 
@@ -13,9 +13,12 @@ use windows_sys::Win32::{
         Registry::{HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW},
         Threading::{CreateEventW, INFINITE, SetEvent, WaitForSingleObject},
     },
-    UI::WindowsAndMessaging::{
-        ASFW_ANY, AllowSetForegroundWindow, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, IsIconic,
-        SW_RESTORE, SetForegroundWindow, ShowWindow,
+    UI::{
+        Shell::ShellExecuteW,
+        WindowsAndMessaging::{
+            ASFW_ANY, AllowSetForegroundWindow, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, IsIconic,
+            SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindow,
+        },
     },
 };
 
@@ -175,6 +178,18 @@ pub fn bring_to_front(window: &slint::Window) {
             ShowWindow(hwnd, SW_RESTORE);
         }
         SetForegroundWindow(hwnd);
+    }
+}
+
+/// Opens a link in the default browser, or a folder in Explorer.
+pub fn open(target: &str) {
+    let (verb, file) = (wide("open"), wide(target));
+    // SAFETY: null-terminated strings that outlive the call; the rest may be null.
+    let result =
+        unsafe { ShellExecuteW(ptr::null_mut(), verb.as_ptr(), file.as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL) };
+    // Anything up to 32 is an error code.
+    if result as usize <= 32 {
+        warn!("failed to open {target}: error {}", result as usize);
     }
 }
 

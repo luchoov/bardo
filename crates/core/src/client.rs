@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bardo_api::{Http, MemberChange};
+use bardo_api::{Http, MemberChange, Release};
 use bardo_audio::{Sound, TransmitControl};
 use bardo_gateway::{
     CAPABILITIES, Config, ConnectionState, Event, Gateway, Id, Notification, RequestGuildMembers,
@@ -43,6 +43,8 @@ pub enum ClientEvent {
     Notice(String),
     /// A cue for something that happened in voice: we joined, someone left, we were moved…
     Sound(Sound),
+    /// A newer bardo is out. Checked once per sign-in.
+    UpdateAvailable(Release),
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +176,7 @@ async fn run(
     let (internal_tx, mut internal) = mpsc::unbounded_channel();
 
     let mut session = Session::new(internal_tx.clone(), transmit, http.clone());
+    tokio::spawn(check_for_update(internal_tx.clone()));
     loop {
         let first = tokio::select! {
             _ = &mut shutdown => {
@@ -228,6 +231,18 @@ async fn run(
 
 fn drain<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> impl Iterator<Item = T> + '_ {
     std::iter::from_fn(|| receiver.try_recv().ok())
+}
+
+/// Asks GitHub whether a newer bardo is out. Every crate shares the workspace version.
+async fn check_for_update(internal: mpsc::UnboundedSender<Internal>) {
+    match bardo_api::newer_release(env!("CARGO_PKG_VERSION")).await {
+        Ok(Some(release)) => {
+            info!(version = release.version, "a newer release is out");
+            let _ = internal.send(Internal::Event(ClientEvent::UpdateAvailable(release)));
+        }
+        Ok(None) => {}
+        Err(e) => debug!("could not check for a newer release: {e}"),
+    }
 }
 
 struct Session {

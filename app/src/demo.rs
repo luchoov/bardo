@@ -1,9 +1,11 @@
 //! Debug builds only: `BARDO_DEMO=1` shows made-up servers instead of connecting, to work on the UI
 //! without an account. `BARDO_DEMO=login` shows the sign-in screen instead, `BARDO_DEMO=call` an
-//! incoming call, and `BARDO_DEMO=sounds` plays people coming and going and a call we make, to hear
-//! every sound. Nothing is saved.
+//! incoming call, `BARDO_DEMO=update` the bar for a newer version, `BARDO_DEMO=settings` the
+//! settings, `BARDO_DEMO=search` a search, `BARDO_DEMO=tour` people joining and talking and a search
+//! being typed, and `BARDO_DEMO=sounds` plays people coming and going and a call we make, to hear
+//! every sound. Nothing is saved. `tools/screenshots.ps1` uses these.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
 use bardo_core::{
     CallView, ChannelView, FriendInVoice, GuildView, Id, Moderation, Participant, PrivateChannelView, Snapshot,
@@ -18,8 +20,62 @@ pub fn login() -> bool {
     std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "login")
 }
 
+pub fn update() -> bool {
+    std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "update")
+}
+
+pub fn settings() -> bool {
+    std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "settings")
+}
+
+/// What `BARDO_DEMO=search` types into the search field.
+pub fn search() -> Option<&'static str> {
+    std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "search").then_some("cr")
+}
+
+pub fn tour() -> bool {
+    std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "tour")
+}
+
 pub fn sounds() -> bool {
     std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "sounds")
+}
+
+/// One step of the tour, shown for the time next to it.
+pub enum TourStep {
+    Snapshot(Box<Snapshot>),
+    Speaking(&'static [u64]),
+    Search(&'static str),
+}
+
+/// Two people join our channel and talk, then a search is typed and cleared. Silent: it is recorded
+/// for the README. No calls, so our channel shows near the top.
+pub fn tour_script() -> Vec<(TourStep, Duration)> {
+    let mut base = snapshot();
+    base.calls.clear();
+    let joined = |people: &[(u64, &str)]| {
+        let mut snapshot = base.clone();
+        let channel = snapshot.guilds[0].channels.iter_mut().find(|c| c.id == OUR_CHANNEL).unwrap();
+        let template = channel.participants[1].clone();
+        channel.participants.extend(
+            people.iter().map(|&(id, name)| Participant { user_id: Id(id), name: name.to_owned(), ..template.clone() }),
+        );
+        TourStep::Snapshot(Box::new(snapshot))
+    };
+    let ms = Duration::from_millis;
+    vec![
+        (TourStep::Snapshot(Box::new(base.clone())), ms(1000)),
+        (joined(&[(120, "Nico")]), ms(900)),
+        (joined(&[(120, "Nico"), (121, "Rama")]), ms(900)),
+        (TourStep::Speaking(&[120]), ms(900)),
+        (TourStep::Speaking(&[101]), ms(700)),
+        (TourStep::Speaking(&[101, 121]), ms(900)),
+        (TourStep::Speaking(&[]), ms(1000)),
+        (TourStep::Search("m"), ms(250)),
+        (TourStep::Search("ma"), ms(250)),
+        (TourStep::Search("mat"), ms(2000)),
+        (TourStep::Search(""), ms(1200)),
+    ]
 }
 
 /// One step of the sound demo, a second or so apart.

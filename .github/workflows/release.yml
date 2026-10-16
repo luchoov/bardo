@@ -1,0 +1,57 @@
+# Pushing a tag like v0.2.0 builds bardo and publishes a release with the portable exe, the
+# installer and their checksums. The tag's message becomes the release notes:
+#
+#   git tag -a v0.2.0 -m "What changed"   (the version in Cargo.toml must match)
+#   git push origin v0.2.0
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The checkout leaves out the tag's message, which becomes the release notes.
+      - run: git fetch --force origin "refs/tags/${{ github.ref_name }}:refs/tags/${{ github.ref_name }}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the version
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object name -eq "bardo" | ForEach-Object version
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Cargo.toml says $version, the tag ${{ github.ref_name }}" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - run: cargo build --release -p bardo --locked
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DVersion=$env:VERSION" installer\bardo.iss
+          if ($LASTEXITCODE) { throw "ISCC failed" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target\release\bardo.exe dist\
+          Copy-Item target\installer\bardo-setup.exe dist\
+          Get-ChildItem dist | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content dist\SHA256SUMS.txt
+
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --title "bardo ${{ github.ref_name }}" --notes-from-tag --verify-tag

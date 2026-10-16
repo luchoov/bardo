@@ -19,8 +19,8 @@ use std::{
 };
 
 use bardo_core::{
-    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest, Ringer,
-    Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
+    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest, Release,
+    Ringer, Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{debug, warn};
@@ -42,6 +42,8 @@ const NOTICE_DURATION: Duration = Duration::from_secs(8);
 const METER_INTERVAL: Duration = Duration::from_millis(50);
 /// How long the ringback plays while nobody answers.
 const RINGBACK_LIMIT: Duration = Duration::from_secs(60);
+/// Linked from the sign-in screen.
+const TOKEN_GUIDE: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/blob/main/docs/token.md");
 
 /// Which hotkey a key capture is for; the index is what the settings page uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +99,8 @@ struct App {
     sound_gate: SoundGate,
     /// Meters the microphone while the settings are open outside voice.
     mic_test: Option<MicTest>,
+    /// A newer version, offered for download.
+    update: Option<Release>,
 }
 
 struct Ringback {
@@ -121,12 +125,18 @@ fn main() -> Result<(), slint::PlatformError> {
     let start_in_tray = std::env::args().any(|arg| arg == win::TRAY_ARG);
     win::use_dark_menus();
     let window = MainWindow::new()?;
-    let claimed = win::claim_single_instance({
-        let weak = window.as_weak();
-        move || {
-            let _ = weak.upgrade_in_event_loop(|window| show_window(&window));
-        }
-    });
+    // The demo may run next to a real bardo, e.g. to take screenshots.
+    #[cfg(debug_assertions)]
+    let single = !demo::enabled();
+    #[cfg(not(debug_assertions))]
+    let single = true;
+    let claimed = !single
+        || win::claim_single_instance({
+            let weak = window.as_weak();
+            move || {
+                let _ = weak.upgrade_in_event_loop(|window| show_window(&window));
+            }
+        });
     if !claimed {
         return Ok(());
     }
@@ -194,8 +204,21 @@ fn main() -> Result<(), slint::PlatformError> {
             app.settings.ephemeral = true;
             app.settings.servers.pinned = demo::pinned();
         });
+        if demo::update() {
+            window.set_update_version("0.2.0".into());
+        }
         update_ringing(&window);
         render_all();
+        if demo::settings() {
+            window.invoke_open_settings();
+        }
+        if let Some(query) = demo::search() {
+            window.set_search(query.into());
+            window.invoke_search_edited(query.into());
+        }
+        if demo::tour() {
+            run_tour(Rc::new(RefCell::new(demo::tour_script().into_iter())));
+        }
     } else {
         start(&window);
     }
@@ -276,6 +299,12 @@ fn wire_main(window: &MainWindow) {
             }
             connect(&window, token);
         }
+    });
+
+    window.on_open_token_guide(|| win::open(TOKEN_GUIDE));
+    window.on_open_update(|| {
+        let url = APP.with_borrow(|app| app.update.as_ref().map(|release| release.url.clone()));
+        win::open(url.as_deref().unwrap_or(concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest")));
     });
 
     window.on_dismiss_notice({
@@ -594,6 +623,10 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
         }
         ClientEvent::Notice(message) => show_notice(window, message),
         ClientEvent::Sound(sound) => play(sound),
+        ClientEvent::UpdateAvailable(release) => {
+            window.set_update_version(release.version.as_str().into());
+            APP.with_borrow_mut(|app| app.update = Some(release));
+        }
     }
 }
 
@@ -742,6 +775,22 @@ fn run_sound_demo() -> slint::Timer {
         });
     });
     timer
+}
+
+#[cfg(debug_assertions)]
+fn run_tour(steps: Rc<RefCell<std::vec::IntoIter<(demo::TourStep, Duration)>>>) {
+    let Some((step, duration)) = steps.borrow_mut().next() else { return };
+    with_window(|window| match step {
+        demo::TourStep::Snapshot(snapshot) => on_client_event(window, ClientEvent::Snapshot(Arc::new(*snapshot))),
+        demo::TourStep::Speaking(users) => {
+            on_client_event(window, ClientEvent::Speaking(users.iter().map(|&id| Id(id)).collect()));
+        }
+        demo::TourStep::Search(query) => {
+            window.set_search(query.into());
+            window.invoke_search_edited(query.into());
+        }
+    });
+    slint::Timer::single_shot(duration, move || run_tour(steps));
 }
 
 fn push_to_talk_sound(pressed: bool) {

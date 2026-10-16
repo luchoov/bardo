@@ -13,6 +13,8 @@ codegen-units = 1
 strip = true
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/luchoov/bardo"
 publish = false
