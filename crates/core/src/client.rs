@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     sync::Arc,
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bardo_api::{Http, MemberChange};
@@ -18,7 +18,7 @@ use crate::{
     cues,
     snapshot::Snapshot,
     store::Store,
-    voice::{AudioDevices, Outcome, UserAudio, VoiceDriver, VoiceSession},
+    voice::{Action, AudioDevices, Direction, Outcome, UserAudio, VoiceDriver, VoiceSession},
 };
 
 /// Op 8 accepts at most 100 user ids per request.
@@ -27,6 +27,9 @@ const MEMBER_REQUEST_LIMIT: usize = 100;
 const LEAVE_FLUSH: Duration = Duration::from_millis(300);
 /// Upper bound on how long [`Client::shutdown`] waits.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// When the gateway has to start a fresh session, voice is joined again if the connection was down
+/// for less than this; after longer, the user may well have moved on.
+const REJOIN_WINDOW: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -69,6 +72,8 @@ pub(crate) enum Internal {
     Event(ClientEvent),
     Voice(VoiceEvent),
     VoiceConnectResult { info: ConnectionInfo, result: Result<(), String> },
+    /// An audio stream was lost, or a device that failed to open is due another try.
+    ReopenDevice { direction: Direction, generation: u64 },
 }
 
 /// A running session. Its networking lives on a dedicated thread with its own tokio runtime;
@@ -199,7 +204,10 @@ async fn run(
         let mut dirty = false;
         for notification in std::iter::once(first).chain(drain(&mut notifications)) {
             match notification {
-                Notification::State(state) => on_event(ClientEvent::State(state)),
+                Notification::State(state) => {
+                    session.on_connection_state(&state);
+                    on_event(ClientEvent::State(state));
+                }
                 Notification::Event(Event::AuthTokenUpdate(update)) => {
                     info!("token rotated");
                     if let Err(e) = http.set_token(&update.token) {
@@ -241,6 +249,8 @@ struct Session {
     ring_when_connected: Option<Id>,
     /// The last snapshot sent, to tell who came and went.
     published: Arc<Snapshot>,
+    /// Since when the gateway has been reconnecting, until the session is back.
+    offline_since: Option<Instant>,
 }
 
 impl Session {
@@ -259,6 +269,13 @@ impl Session {
             requested_members: HashSet::new(),
             watched_guilds: HashSet::new(),
             published: Arc::default(),
+            offline_since: None,
+        }
+    }
+
+    fn on_connection_state(&mut self, state: &ConnectionState) {
+        if matches!(state, ConnectionState::Reconnecting { .. }) {
+            self.offline_since.get_or_insert_with(Instant::now);
         }
     }
 
@@ -296,6 +313,11 @@ impl Session {
     /// Returns whether the snapshot must be rebuilt.
     fn settle_voice(&mut self, outcome: Outcome, gateway: &Gateway, on_event: &impl Fn(ClientEvent)) -> bool {
         for action in self.voice.take_actions() {
+            // The old connection's speakers would stay lit until someone speaks on the next one.
+            if action == Action::Disconnect && !self.remote_speaking.is_empty() {
+                self.remote_speaking.clear();
+                self.publish_speaking(on_event);
+            }
             self.driver.perform(action, gateway);
         }
         for sound in self.voice.take_cues() {
@@ -318,7 +340,12 @@ impl Session {
                 self.session_id = ready.session_id.clone();
                 self.supplemental_received = false;
                 self.requested_members.clear();
-                self.voice.on_new_session()
+                let rejoin = self.offline_since.take().is_some_and(|since| since.elapsed() < REJOIN_WINDOW);
+                self.voice.on_new_session(rejoin)
+            }
+            (Event::Resumed, _) => {
+                self.offline_since = None;
+                Outcome::Nothing
             }
             (Event::ReadySupplemental(_), _) => {
                 self.supplemental_received = true;
@@ -350,6 +377,10 @@ impl Session {
             }
             Internal::Voice(event) => self.voice.on_voice_event(&event),
             Internal::VoiceConnectResult { info, result } => self.voice.on_connect_result(&info, result),
+            Internal::ReopenDevice { direction, generation } => {
+                self.driver.reopen(direction, generation);
+                return;
+            }
         };
         if self.settle_voice(outcome, gateway, on_event) {
             self.publish(on_event);
@@ -435,7 +466,7 @@ impl Session {
                 return;
             }
             Command::SetAudioDevices(devices) => {
-                self.driver.set_devices(devices, self.store.me.as_ref().map(|me| me.id));
+                self.driver.set_devices(devices);
                 return;
             }
             Command::SetWatchedGuilds(guilds) => {

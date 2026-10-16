@@ -2,7 +2,7 @@ use cpal::{
     FromSample, SampleFormat, SizedSample, StreamConfig,
     traits::{DeviceTrait, StreamTrait},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::{Error, FRAME_LEN, SAMPLE_RATE, devices, resample::Resampler};
 
@@ -13,10 +13,13 @@ pub struct Capture {
 
 impl Capture {
     /// Opens the input device with `device_id` (or the default one) in its native format and calls
-    /// `on_frame`, on the audio thread, with 20 ms mono frames at 48 kHz in [-1, 1].
+    /// `on_frame`, on the audio thread, with 20 ms mono frames at 48 kHz in [-1, 1]. `on_lost` is
+    /// called once if the device goes away, or the default changes while capturing from it; the
+    /// capture must then be started again.
     pub fn start(
         device_id: Option<&str>,
         on_frame: impl FnMut(&mut [f32]) + Send + 'static,
+        on_lost: impl FnOnce() + Send + 'static,
     ) -> Result<Self, Error> {
         let device = devices::input_device(device_id)
             .ok_or_else(|| Error::with_message(cpal::ErrorKind::DeviceNotAvailable, "no input device"))?;
@@ -34,10 +37,10 @@ impl Capture {
 
         let framer = Framer::new(config.sample_rate, usize::from(config.channels));
         let stream = match supported.sample_format() {
-            SampleFormat::F32 => build::<f32>(&device, config, framer, on_frame),
-            SampleFormat::I16 => build::<i16>(&device, config, framer, on_frame),
-            SampleFormat::I32 => build::<i32>(&device, config, framer, on_frame),
-            SampleFormat::U16 => build::<u16>(&device, config, framer, on_frame),
+            SampleFormat::F32 => build::<f32>(&device, config, framer, on_frame, on_lost),
+            SampleFormat::I16 => build::<i16>(&device, config, framer, on_frame, on_lost),
+            SampleFormat::I32 => build::<i32>(&device, config, framer, on_frame, on_lost),
+            SampleFormat::U16 => build::<u16>(&device, config, framer, on_frame, on_lost),
             other => Err(Error::with_message(
                 cpal::ErrorKind::UnsupportedConfig,
                 format!("unsupported input sample format {other}"),
@@ -53,6 +56,7 @@ fn build<T>(
     config: StreamConfig,
     mut framer: Framer,
     mut on_frame: impl FnMut(&mut [f32]) + Send + 'static,
+    on_lost: impl FnOnce() + Send + 'static,
 ) -> Result<cpal::Stream, Error>
 where
     T: SizedSample,
@@ -61,7 +65,7 @@ where
     device.build_input_stream::<T, _, _>(
         config,
         move |data: &[T], _| framer.push(data.iter().map(|&sample| sample.to_sample::<f32>()), &mut on_frame),
-        |e| warn!("capture stream error: {e}"),
+        devices::error_handler("capture", on_lost),
         None,
     )
 }

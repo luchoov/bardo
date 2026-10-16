@@ -145,7 +145,7 @@ fn play_paced(sink: &mut crate::PlaybackSink, samples: &[f32], start: Instant, k
 /// Plays a cue on the output device with `device_id` (or the default one), in the background.
 pub fn play(sound: Sound, device_id: Option<String>) {
     let spawned = thread::Builder::new().name("bardo-sound".into()).spawn(move || {
-        let (_playback, mut sink) = match Playback::start(device_id.as_deref()) {
+        let (_playback, mut sink) = match Playback::start(device_id.as_deref(), || {}) {
             Ok(playback) => playback,
             Err(e) => return warn!("failed to open the output for a sound: {e}"),
         };
@@ -179,7 +179,7 @@ impl Ringer {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let spawned = thread::Builder::new().name("bardo-ringer".into()).spawn(move || {
-            let (_playback, mut sink) = match Playback::start(device_id.as_deref()) {
+            let (_playback, mut sink) = match Playback::start(device_id.as_deref(), || {}) {
                 Ok(playback) => playback,
                 Err(e) => return warn!("failed to open the output for the ringtone: {e}"),
             };

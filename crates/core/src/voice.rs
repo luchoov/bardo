@@ -4,13 +4,13 @@
 //!
 //! [`VoiceSession`] is the state machine; it emits [`Action`]s that [`VoiceDriver`] carries out.
 
-use std::{collections::HashMap, mem, sync::Arc};
+use std::{collections::HashMap, mem, sync::Arc, time::Duration};
 
-use bardo_audio::{Capture, Playback, Sound, TransmitControl, Transmitter};
+use bardo_audio::{Capture, Playback, PlaybackSink, Sound, TransmitControl, Transmitter};
 use bardo_gateway::{Gateway, Id, UpdateVoiceState, VoiceServerUpdate, VoiceState};
 use bardo_voice::{ConnectionInfo, EventCallback, Voice, VoiceEvent};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     client::{ClientEvent, Internal},
@@ -218,12 +218,15 @@ impl VoiceSession {
         self.send_state();
     }
 
-    /// A fresh gateway session drops any voice connection of the previous one.
-    pub fn on_new_session(&mut self) -> Outcome {
-        if self.target.is_none() {
-            return Outcome::Nothing;
-        }
+    /// A fresh gateway session drops any voice connection of the previous one. With `rejoin`, the
+    /// same channel is joined again on the new session; the join sound tells the user once we are back.
+    pub fn on_new_session(&mut self, rejoin: bool) -> Outcome {
+        let Some(target) = self.target else { return Outcome::Nothing };
         self.reset();
+        if rejoin {
+            info!("rejoining voice on the new gateway session");
+            return self.join(target.guild_id, target.channel_id);
+        }
         self.dropped("Disconnected from voice after the connection to Discord was reset.".into())
     }
 
@@ -381,6 +384,17 @@ pub struct AudioDevices {
     pub output: Option<String>,
 }
 
+/// How long to wait before trying again to open a device that failed to open, e.g. because the
+/// only headset was unplugged.
+const DEVICE_RETRY: Duration = Duration::from_secs(2);
+
+/// The microphone or the output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Input,
+    Output,
+}
+
 /// Owns the voice driver, the microphone and the output stream, and carries out [`Action`]s.
 pub(crate) struct VoiceDriver {
     /// Where driver events and connection results are reported.
@@ -392,6 +406,15 @@ pub(crate) struct VoiceDriver {
     capture: Option<Capture>,
     deafened: bool,
     user_audio: HashMap<Id, UserAudio>,
+    /// Our user id, for the microphone track; known once we connect.
+    me: Option<Id>,
+    /// Bumped on every attempt to open each device, so that reports about an older stream (or a
+    /// retry meant for an older attempt) are ignored.
+    input_generation: u64,
+    output_generation: u64,
+    /// The device failed to open and is being retried. The user is told once, not on every try.
+    input_missing: bool,
+    output_missing: bool,
 }
 
 impl VoiceDriver {
@@ -405,6 +428,11 @@ impl VoiceDriver {
             capture: None,
             deafened: false,
             user_audio: HashMap::new(),
+            me: None,
+            input_generation: 0,
+            output_generation: 0,
+            input_missing: false,
+            output_missing: false,
         }
     }
 
@@ -413,9 +441,10 @@ impl VoiceDriver {
             Action::UpdateState(update) => gateway.update_voice_state(&update),
             Action::Connect(info) => {
                 if self.voice.is_none() {
+                    self.me = Some(info.user_id);
                     let voice = self.create_voice();
                     self.voice = Some(voice);
-                    self.start_capture(info.user_id);
+                    self.start_capture();
                 }
                 let Some(voice) = &mut self.voice else { return };
                 let connect = voice.connect(info.clone());
@@ -432,6 +461,8 @@ impl VoiceDriver {
                 }
                 self.voice = None;
                 self.playback = None;
+                self.input_missing = false;
+                self.output_missing = false;
             }
             Action::SelfState { mute, deaf } => {
                 self.transmit.set_muted(mute);
@@ -444,7 +475,7 @@ impl VoiceDriver {
     }
 
     /// Switches devices, reopening them if we are in voice.
-    pub fn set_devices(&mut self, devices: AudioDevices, me: Option<Id>) {
+    pub fn set_devices(&mut self, devices: AudioDevices) {
         if devices == self.devices {
             return;
         }
@@ -455,15 +486,31 @@ impl VoiceDriver {
             return;
         }
         if output_changed {
-            self.playback = None;
-            let sink = self.open_playback();
-            if let Some(voice) = &self.voice {
-                voice.set_playback_sink(sink);
-            }
+            self.reopen_playback();
         }
-        if input_changed && let Some(me) = me {
+        if input_changed {
             self.capture = None;
-            self.start_capture(me);
+            self.start_capture();
+        }
+    }
+
+    /// A stream stopped working (its device went away, or the system default it followed changed),
+    /// or a device that failed to open is due another try. `generation` is the attempt it is about.
+    pub fn reopen(&mut self, direction: Direction, generation: u64) {
+        if self.voice.is_none() {
+            return;
+        }
+        match direction {
+            Direction::Output if generation == self.output_generation => {
+                debug!("reopening the output device");
+                self.reopen_playback();
+            }
+            Direction::Input if generation == self.input_generation => {
+                debug!("reopening the microphone");
+                self.capture = None;
+                self.start_capture();
+            }
+            _ => {}
         }
     }
 
@@ -474,36 +521,76 @@ impl VoiceDriver {
         }
     }
 
-    fn open_playback(&mut self) -> Option<bardo_audio::PlaybackSink> {
-        match Playback::start(self.devices.output.as_deref()) {
+    fn reopen_playback(&mut self) {
+        self.playback = None;
+        let sink = self.open_playback();
+        if let Some(voice) = &self.voice {
+            voice.set_playback_sink(sink);
+        }
+    }
+
+    /// Opens the output. If that fails, it is tried again until it works or we leave voice.
+    fn open_playback(&mut self) -> Option<PlaybackSink> {
+        self.output_generation += 1;
+        let on_lost = self.reopen_sender(Direction::Output, self.output_generation);
+        match Playback::start(self.devices.output.as_deref(), on_lost) {
             Ok((playback, sink)) => {
                 self.playback = Some(playback);
+                self.output_missing = false;
                 Some(sink)
             }
             Err(e) => {
-                warn!("could not open the output device: {e}");
-                self.notice(format!("Couldn't open the output device: {e}"));
+                if !mem::replace(&mut self.output_missing, true) {
+                    warn!("could not open the output device: {e}");
+                    self.notice(format!("Couldn't open the output device: {e}"));
+                }
+                self.retry_later(Direction::Output, self.output_generation);
                 None
             }
         }
     }
 
-    /// Opens the microphone and feeds it, through the transmit gate, to the voice connection.
-    fn start_capture(&mut self, me: Id) {
-        let Some(voice) = &mut self.voice else { return };
+    /// Opens the microphone and feeds it, through the transmit gate, to the voice connection. If
+    /// that fails, it is tried again until it works or we leave voice.
+    fn start_capture(&mut self) {
+        self.input_generation += 1;
+        let on_lost = self.reopen_sender(Direction::Input, self.input_generation);
+        let (Some(voice), Some(me)) = (&mut self.voice, self.me) else { return };
         let mut feed = voice.start_microphone(me);
         let mut transmitter = Transmitter::new(self.transmit.clone());
-        let started = Capture::start(self.devices.input.as_deref(), move |frame| {
+        let on_frame = move |frame: &mut [f32]| {
             let open = transmitter.process(frame);
             feed.push(frame, open);
-        });
-        match started {
-            Ok(capture) => self.capture = Some(capture),
+        };
+        match Capture::start(self.devices.input.as_deref(), on_frame, on_lost) {
+            Ok(capture) => {
+                self.capture = Some(capture);
+                self.input_missing = false;
+            }
             Err(e) => {
-                warn!("could not open the microphone: {e}");
-                self.notice(format!("Couldn't open the microphone: {e}"));
+                if !mem::replace(&mut self.input_missing, true) {
+                    warn!("could not open the microphone: {e}");
+                    self.notice(format!("Couldn't open the microphone: {e}"));
+                }
+                self.retry_later(Direction::Input, self.input_generation);
             }
         }
+    }
+
+    /// What a stream calls, from its audio thread, when it is lost.
+    fn reopen_sender(&self, direction: Direction, generation: u64) -> impl FnOnce() + Send + 'static {
+        let events = self.events.clone();
+        move || {
+            let _ = events.send(Internal::ReopenDevice { direction, generation });
+        }
+    }
+
+    fn retry_later(&self, direction: Direction, generation: u64) {
+        let reopen = self.reopen_sender(direction, generation);
+        tokio::spawn(async move {
+            tokio::time::sleep(DEVICE_RETRY).await;
+            reopen();
+        });
     }
 
     fn notice(&self, message: String) {
@@ -784,6 +871,40 @@ mod tests {
         self_muted.self_mute = true;
         voice.on_voice_state(&self_muted, ME, SESSION);
         assert!(voice.take_cues().is_empty());
+    }
+
+    #[test]
+    fn a_new_gateway_session_rejoins_the_channel() {
+        let mut voice = connected();
+        voice.take_cues();
+        assert_eq!(voice.on_new_session(true), Outcome::Changed);
+        let actions = voice.take_actions();
+        assert_eq!(actions[0], Action::Disconnect);
+        assert!(matches!(&actions[1], Action::UpdateState(update) if update.channel_id == Some(CHANNEL)));
+        assert!(voice.take_cues().is_empty());
+        assert_eq!(voice.view(&Store::default()).unwrap().status, VoiceStatus::Connecting);
+
+        // Back in on the new session: the join sound says so.
+        const NEW_SESSION: &str = "new-session";
+        voice.on_voice_state(&state(Some(CHANNEL), NEW_SESSION), ME, NEW_SESSION);
+        voice.on_voice_server(&server(Some("voice.discord.media:443")), ME);
+        let info = ConnectionInfo { session_id: NEW_SESSION.into(), ..connect_info(CHANNEL) };
+        assert_eq!(voice.take_actions(), [Action::Connect(info.clone())]);
+        voice.on_connect_result(&info, Ok(()));
+        assert_eq!(voice.connected_channel(), Some(CHANNEL));
+        assert_eq!(voice.take_cues(), [Sound::Join]);
+    }
+
+    #[test]
+    fn a_new_gateway_session_after_a_long_outage_leaves_voice() {
+        let mut voice = connected();
+        voice.take_cues();
+        assert!(matches!(voice.on_new_session(false), Outcome::Notice(_)));
+        assert_eq!(voice.take_actions(), [Action::Disconnect]);
+        assert_eq!(voice.take_cues(), [Sound::Disconnected]);
+        assert!(voice.view(&Store::default()).is_none());
+
+        assert_eq!(VoiceSession::default().on_new_session(true), Outcome::Nothing);
     }
 
     #[test]

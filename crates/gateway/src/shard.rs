@@ -78,6 +78,9 @@ pub enum Notification {
 }
 
 /// Handle to the gateway task. Dropping it closes the connection.
+///
+/// Commands are sent once the session is ready (READY or RESUMED); while reconnecting they wait.
+/// A fresh session (READY) drops whatever was still waiting: it was meant for the previous one.
 pub struct Gateway {
     commands: mpsc::UnboundedSender<Value>,
 }
@@ -94,6 +97,7 @@ impl Gateway {
             session: None,
             seq: None,
             attempt: 0,
+            ready: false,
             outbox: VecDeque::new(),
             sent: VecDeque::new(),
             dump_dir: std::env::var_os("BARDO_DUMP_DIR").map(PathBuf::from),
@@ -167,7 +171,10 @@ struct Runner {
     session: Option<Session>,
     seq: Option<u64>,
     attempt: u32,
-    /// Commands waiting for a free slot in the send budget. Survives reconnects.
+    /// The current connection has received READY or RESUMED, so commands may be sent.
+    ready: bool,
+    /// Commands waiting for the session to be ready and for a free slot in the send budget.
+    /// Survives reconnects that resume.
     outbox: VecDeque<Value>,
     /// Send timestamps inside the current rate limit window.
     sent: VecDeque<Instant>,
@@ -257,6 +264,7 @@ impl Runner {
 
     async fn drive(&mut self, socket: &mut Socket) -> Result<Exit, Error> {
         let mut inflater = Inflater::new();
+        self.ready = false;
 
         let hello = loop {
             let Some(message) = socket.next().await else {
@@ -306,7 +314,7 @@ impl Runner {
                     Some(command) => self.outbox.push_back(command),
                     None => return Ok(Exit::Shutdown),
                 },
-                _ = time::sleep_until(send_slot), if !self.outbox.is_empty() => {
+                _ = time::sleep_until(send_slot), if self.ready && !self.outbox.is_empty() => {
                     if let Some(command) = self.outbox.pop_front() {
                         self.send_now(socket, &command).await?;
                     }
@@ -387,12 +395,20 @@ impl Runner {
                     id: ready.session_id.clone(),
                     resume_url: ready.resume_gateway_url.clone(),
                 });
+                // Whoever sent these has not seen this READY yet, so they still describe the old
+                // session: a voice join from back then would put us in a channel nobody expects.
+                let dropped = discard(&mut self.outbox, &mut self.commands);
+                if dropped > 0 {
+                    info!(dropped, "dropped commands meant for the previous session");
+                }
                 self.attempt = 0;
+                self.ready = true;
                 self.set_state(ConnectionState::Connected);
             }
             Event::Resumed => {
                 info!("resumed");
                 self.attempt = 0;
+                self.ready = true;
                 self.set_state(ConnectionState::Connected);
             }
             Event::AuthTokenUpdate(update) => self.config.token = update.token.clone(),
@@ -462,8 +478,35 @@ fn frame_bytes<'a>(message: &'a Message, inflater: &'a mut Inflater) -> Result<O
     }
 }
 
+/// Empties the outbox and the commands not yet taken from the channel. Returns how many there were.
+fn discard(outbox: &mut VecDeque<Value>, commands: &mut mpsc::UnboundedReceiver<Value>) -> usize {
+    let queued = outbox.len();
+    outbox.clear();
+    queued + std::iter::from_fn(|| commands.try_recv().ok()).count()
+}
+
 /// Exponential backoff with jitter: ~1 s, 2 s, 4 s … capped at 60 s.
 fn backoff(attempt: u32) -> Duration {
     let base = Duration::from_secs(1u64 << attempt.saturating_sub(1).min(6)).min(Duration::from_secs(60));
     base.mul_f64(0.5 + rand::random::<f64>() * 0.5)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discarding_empties_the_outbox_and_the_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut outbox = VecDeque::from([json!({ "op": 4 })]);
+        tx.send(json!({ "op": 4 })).unwrap();
+        tx.send(json!({ "op": 8 })).unwrap();
+        assert_eq!(discard(&mut outbox, &mut rx), 3);
+        assert!(outbox.is_empty());
+        assert!(rx.try_recv().is_err());
+
+        // Later commands still get through.
+        tx.send(json!({ "op": 4 })).unwrap();
+        assert!(rx.try_recv().is_ok());
+    }
 }

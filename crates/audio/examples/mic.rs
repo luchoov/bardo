@@ -15,13 +15,14 @@ fn main() -> Result<(), bardo_audio::Error> {
     control.set_noise_suppression(!std::env::args().any(|arg| arg == "--raw"));
     let mut transmitter = Transmitter::new(control.clone());
     let mut frames = 0u32;
-    let _capture = Capture::start(None, move |frame| {
+    let on_frame = move |frame: &mut [f32]| {
         transmitter.process(frame);
         frames += 1;
         if frames.is_multiple_of(10) {
             println!("{:>5} ms", frames * 20);
         }
-    })?;
+    };
+    let _capture = Capture::start(None, on_frame, || println!("the microphone went away"))?;
 
     for _ in 0..15 {
         thread::sleep(Duration::from_millis(200));

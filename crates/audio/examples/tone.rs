@@ -14,7 +14,7 @@ fn main() -> Result<(), bardo_audio::Error> {
         println!("output device: {}", device.name);
     }
 
-    let (_playback, mut sink) = Playback::start(None)?;
+    let (_playback, mut sink) = Playback::start(None, || {})?;
     let mut frame = vec![0.0; FRAME_LEN * 2];
     let mut phase = 0.0f32;
     let start = Instant::now();

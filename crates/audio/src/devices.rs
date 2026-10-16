@@ -1,5 +1,10 @@
-use cpal::traits::{DeviceTrait, HostTrait};
-use tracing::warn;
+use cpal::{
+    ErrorKind,
+    traits::{DeviceTrait, HostTrait},
+};
+use tracing::{debug, info, warn};
+
+use crate::Error;
 
 /// An audio endpoint as shown to the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,4 +62,24 @@ pub(crate) fn input_device(id: Option<&str>) -> Option<cpal::Device> {
             .find(|device| device.id().is_ok_and(|device_id| device_id.to_string() == id))
     });
     chosen.or_else(|| host.default_input_device())
+}
+
+/// The error callback for a stream. Calls `on_lost`, once, when the stream stops working for good:
+/// its device went away, or the system default it follows changed (WASAPI never moves a stream to
+/// the new default by itself). Anything else is only logged.
+pub(crate) fn error_handler(
+    stream: &'static str,
+    on_lost: impl FnOnce() + Send + 'static,
+) -> impl FnMut(Error) + Send + 'static {
+    let mut on_lost = Some(on_lost);
+    move |e| match e.kind() {
+        ErrorKind::DeviceNotAvailable | ErrorKind::StreamInvalidated => {
+            if let Some(on_lost) = on_lost.take() {
+                info!("{stream} stream lost: {e}");
+                on_lost();
+            }
+        }
+        ErrorKind::Xrun => debug!("{stream} stream glitch: {e}"),
+        _ => warn!("{stream} stream error: {e}"),
+    }
 }

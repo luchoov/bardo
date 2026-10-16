@@ -27,8 +27,12 @@ pub struct PlaybackSink {
 
 impl Playback {
     /// Opens the output device with `device_id` (or the default one) at 48 kHz stereo.
-    /// WASAPI converts to the device's own format.
-    pub fn start(device_id: Option<&str>) -> Result<(Self, PlaybackSink), Error> {
+    /// WASAPI converts to the device's own format. `on_lost` is called once if the device goes
+    /// away, or the default changes while playing on it; the playback must then be started again.
+    pub fn start(
+        device_id: Option<&str>,
+        on_lost: impl FnOnce() + Send + 'static,
+    ) -> Result<(Self, PlaybackSink), Error> {
         let device = devices::output_device(device_id)
             .ok_or_else(|| Error::with_message(cpal::ErrorKind::DeviceNotAvailable, "no output device"))?;
         if let Some(described) = devices::describe(&device) {
@@ -41,7 +45,7 @@ impl Playback {
         let stream = device.build_output_stream::<f32, _, _>(
             config,
             move |data, _| fill(&mut consumer, &mut primed, data),
-            |e| warn!("playback stream error: {e}"),
+            devices::error_handler("playback", on_lost),
             None,
         )?;
         stream.play()?;

@@ -636,7 +636,8 @@ fn start_call(channel: &str) {
 /// connection's own capture feeds the meter.
 fn update_mic_test() {
     APP.with_borrow_mut(|app| {
-        if app.snapshot.voice.is_some() {
+        if app.snapshot.voice.is_some() || app.mic_test.as_ref().is_some_and(MicTest::is_lost) {
+            // In voice, or the microphone went away: a lost one is opened again on the next tick.
             app.mic_test = None;
         } else if app.mic_test.is_none() {
             match MicTest::start(app.settings.voice.input_device.as_deref(), app.transmit.clone()) {
