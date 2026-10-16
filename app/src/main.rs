@@ -425,6 +425,7 @@ fn wire_settings(window: &MainWindow) {
                 ui.set_threshold(app.settings.voice.threshold_db);
                 ui.set_input_volume(f32::from(app.settings.voice.input_volume));
                 ui.set_sounds_volume(f32::from(app.settings.voice.sounds_volume));
+                ui.set_output_volume(f32::from(app.settings.voice.output_volume));
             });
             render_settings(&window);
             window.set_settings_open(true);
@@ -508,6 +509,11 @@ fn wire_settings(window: &MainWindow) {
     ui.on_set_input_volume(|volume| {
         let volume = volume.round().clamp(0.0, f32::from(settings::MAX_INPUT_VOLUME)) as u16;
         update_voice_settings(|voice, _| voice.input_volume = volume);
+    });
+    ui.on_set_output_volume(|volume| {
+        let volume = volume.round().clamp(0.0, f32::from(settings::MAX_VOLUME)) as u16;
+        update_voice_settings(|voice, _| voice.output_volume = volume);
+        send(Command::SetOutputGain(APP.with_borrow(|app| app.settings.voice.output_gain())));
     });
     ui.on_set_sounds_volume(|volume| {
         let volume = volume.round().clamp(0.0, f32::from(settings::MAX_SOUNDS_VOLUME)) as u16;
@@ -693,6 +699,7 @@ fn connect(window: &MainWindow, token: String) {
         for (&user_id, &audio) in &app.settings.users {
             client.send(Command::SetUserAudio { user_id, audio: user_audio(audio) });
         }
+        client.send(Command::SetOutputGain(app.settings.voice.output_gain()));
         client.send(Command::SetAudioDevices(audio_devices(&app.settings.voice)));
         if app.settings.voice.self_mute {
             client.send(Command::SetSelfMute(true));

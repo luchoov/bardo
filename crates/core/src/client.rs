@@ -62,6 +62,8 @@ pub enum Command {
     SetSelfDeaf(bool),
     /// How a user sounds to us.
     SetUserAudio { user_id: Id, audio: UserAudio },
+    /// How loud everyone sounds to us, on top of their own volume: 1.0 is unchanged, up to 2.0.
+    SetOutputGain(f32),
     SetAudioDevices(AudioDevices),
     /// The guilds being shown in full. Missing member data (names) is only fetched for these and
     /// for the guild we are in voice in, so big public servers cost nothing while hidden.
@@ -478,6 +480,10 @@ impl Session {
             Command::SetSelfDeaf(deaf) => self.voice.set_self_deaf(deaf),
             Command::SetUserAudio { user_id, audio } => {
                 self.driver.set_user_audio(user_id, audio);
+                return;
+            }
+            Command::SetOutputGain(gain) => {
+                self.driver.set_output_gain(gain);
                 return;
             }
             Command::SetAudioDevices(devices) => {

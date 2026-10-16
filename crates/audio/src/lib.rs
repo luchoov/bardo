@@ -5,6 +5,7 @@
 mod capture;
 mod codec;
 mod devices;
+mod limiter;
 mod mixer;
 mod playback;
 mod resample;

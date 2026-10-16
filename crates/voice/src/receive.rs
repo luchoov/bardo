@@ -47,6 +47,11 @@ impl Receiver {
         self.gains.insert(user_id, gain.clamp(0.0, 2.0));
     }
 
+    /// Gain on everyone at once, on top of their own.
+    pub(crate) fn set_output_gain(&mut self, gain: f32) {
+        self.mixer.set_gain(gain);
+    }
+
     fn map_ssrc(&mut self, ssrc: u32, user_id: Id) {
         if self.users.insert(ssrc, user_id) != Some(user_id) {
             debug!(ssrc, %user_id, "mapped SSRC");

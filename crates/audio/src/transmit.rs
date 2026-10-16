@@ -9,7 +9,7 @@ use std::sync::{
 use nnnoiseless::DenoiseState;
 use tracing::info;
 
-use crate::{FRAME_LEN, SAMPLE_RATE, mixer::rms_f32};
+use crate::{FRAME_LEN, SAMPLE_RATE, limiter::limit, mixer::rms_f32};
 
 /// Frames the gate stays open after voice activity stops, so word endings are not clipped.
 const VAD_HANGOVER: u32 = 15;
@@ -40,8 +40,6 @@ const COMPRESSOR_THRESHOLD: f32 = 0.5;
 const COMPRESSOR_RATIO: f32 = 4.0;
 const COMPRESSOR_ATTACK: f32 = 1.0 / (0.001 * SAMPLE_RATE as f32);
 const COMPRESSOR_RELEASE: f32 = 1.0 / (0.08 * SAMPLE_RATE as f32);
-/// The limiter leaves samples below this untouched and bends louder ones smoothly towards 1.0.
-const LIMITER_KNEE: f32 = 0.8;
 /// How often the level of the speech being sent is logged, in frames (5 s).
 const REPORT_EVERY: u32 = 250;
 
@@ -327,18 +325,6 @@ impl SpeechReport {
     }
 }
 
-/// Soft-clips samples above [`LIMITER_KNEE`] so extra gain never wraps or hard-clips.
-fn limit(frame: &mut [f32]) {
-    const RANGE: f32 = 1.0 - LIMITER_KNEE;
-    for sample in frame {
-        let magnitude = sample.abs();
-        if magnitude > LIMITER_KNEE {
-            let bent = LIMITER_KNEE + RANGE * ((magnitude - LIMITER_KNEE) / RANGE).tanh();
-            *sample = bent.copysign(*sample);
-        }
-    }
-}
-
 /// Opens while its input is active and stays open for a few frames afterwards.
 #[derive(Default)]
 struct Gate {
@@ -444,7 +430,7 @@ mod tests {
         // left to do.
         let mut samples = frame(0.5);
         transmitter.process(&mut samples);
-        assert!(samples.iter().all(|s| s.abs() < LIMITER_KNEE), "{}", samples[0]);
+        assert!(samples.iter().all(|s| s.abs() < crate::limiter::KNEE), "{}", samples[0]);
 
         let mut quiet = frame(0.45);
         limit(&mut quiet);

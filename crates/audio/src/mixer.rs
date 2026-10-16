@@ -1,13 +1,18 @@
-use crate::STEREO_FRAME_LEN;
+use crate::{STEREO_FRAME_LEN, limiter::limit};
 
-/// Sums 20 ms stereo frames of decoded voice into one output frame, applying a gain per source.
+/// The most the whole mix can be turned up.
+pub const MAX_MIX_GAIN: f32 = 2.0;
+
+/// Sums 20 ms stereo frames of decoded voice into one output frame, applying a gain per source
+/// and one to the whole mix.
 pub struct Mixer {
     frame: Vec<f32>,
+    gain: f32,
 }
 
 impl Default for Mixer {
     fn default() -> Self {
-        Self { frame: vec![0.0; STEREO_FRAME_LEN] }
+        Self { frame: vec![0.0; STEREO_FRAME_LEN], gain: 1.0 }
     }
 }
 
@@ -25,11 +30,18 @@ impl Mixer {
         }
     }
 
-    /// The mixed frame, limited to [-1, 1].
+    /// Sets the gain on the whole mix, from 0.0 (silence) to [`MAX_MIX_GAIN`] (1.0 = unchanged).
+    pub fn set_gain(&mut self, gain: f32) {
+        self.gain = if gain.is_finite() { gain.clamp(0.0, MAX_MIX_GAIN) } else { 1.0 };
+    }
+
+    /// The mixed frame at the mix gain, softly limited to [-1, 1].
     pub fn finish(&mut self) -> &[f32] {
-        for sample in &mut self.frame {
-            *sample = sample.clamp(-1.0, 1.0);
+        if self.gain != 1.0 {
+            let gain = self.gain;
+            self.frame.iter_mut().for_each(|sample| *sample *= gain);
         }
+        limit(&mut self.frame);
         &self.frame
     }
 }
@@ -72,9 +84,32 @@ mod tests {
     fn limits_loud_mixes_and_starts_from_silence() {
         let mut mixer = Mixer::default();
         mixer.add(&[i16::MAX; STEREO_FRAME_LEN], 2.0);
-        assert_eq!(mixer.finish()[10], 1.0);
+        let loud = mixer.finish()[10];
+        assert!(loud > 0.99 && loud <= 1.0, "{loud}");
         mixer.clear();
         assert_eq!(mixer.finish()[10], 0.0);
+    }
+
+    #[test]
+    fn the_mix_gain_turns_everyone_up_without_clipping() {
+        let mut mixer = Mixer::default();
+        mixer.set_gain(1.5);
+        mixer.add(&[i16::MAX / 4; STEREO_FRAME_LEN], 1.0);
+        assert!((mixer.finish()[0] - 0.375).abs() < 0.001);
+        // Two people at 200 % on top of 200 % stay within full scale, and louder stays louder.
+        mixer.set_gain(9.0);
+        mixer.clear();
+        mixer.add(&[i16::MAX / 4; STEREO_FRAME_LEN], 2.0);
+        let loud = mixer.finish()[0];
+        mixer.clear();
+        mixer.add(&[i16::MAX / 4; STEREO_FRAME_LEN], 2.0);
+        mixer.add(&[i16::MAX / 4; STEREO_FRAME_LEN], 2.0);
+        let louder = mixer.finish()[0];
+        assert!(loud > 0.8 && louder > loud && louder <= 1.0, "{loud} {louder}");
+        mixer.set_gain(0.0);
+        mixer.clear();
+        mixer.add(&[i16::MAX / 4; STEREO_FRAME_LEN], 1.0);
+        assert_eq!(mixer.finish()[0], 0.0);
     }
 
     #[test]

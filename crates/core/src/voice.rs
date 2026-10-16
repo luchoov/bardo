@@ -406,6 +406,8 @@ pub(crate) struct VoiceDriver {
     capture: Option<Capture>,
     deafened: bool,
     user_audio: HashMap<Id, UserAudio>,
+    /// Gain on everyone we hear, on top of [`Self::user_audio`].
+    output_gain: f32,
     /// Our user id, for the microphone track; known once we connect.
     me: Option<Id>,
     /// Bumped on every attempt to open each device, so that reports about an older stream (or a
@@ -428,6 +430,7 @@ impl VoiceDriver {
             capture: None,
             deafened: false,
             user_audio: HashMap::new(),
+            output_gain: 1.0,
             me: None,
             input_generation: 0,
             output_generation: 0,
@@ -521,6 +524,13 @@ impl VoiceDriver {
         }
     }
 
+    pub fn set_output_gain(&mut self, gain: f32) {
+        self.output_gain = gain;
+        if let Some(voice) = &self.voice {
+            voice.set_output_gain(gain);
+        }
+    }
+
     fn reopen_playback(&mut self) {
         self.playback = None;
         let sink = self.open_playback();
@@ -605,6 +615,7 @@ impl VoiceDriver {
         });
         let voice = Voice::new(sink, on_event);
         voice.set_deafened(self.deafened);
+        voice.set_output_gain(self.output_gain);
         for (&user_id, &audio) in &self.user_audio {
             voice.set_user_gain(user_id, audio.gain());
         }

@@ -115,6 +115,8 @@ pub struct VoiceSettings {
     /// Device ids; `None` follows the system default.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
+    /// Volume of everyone we hear in percent, 0–200, on top of their own.
+    pub output_volume: u16,
     pub push_to_talk: bool,
     /// Windows virtual-key code.
     pub push_to_talk_key: Option<u32>,
@@ -142,6 +144,11 @@ impl VoiceSettings {
     /// The linear gain for [`Self::input_volume`].
     pub fn input_gain(&self) -> f32 {
         f32::from(self.input_volume.min(MAX_INPUT_VOLUME)) / 100.0
+    }
+
+    /// The linear gain for [`Self::output_volume`].
+    pub fn output_gain(&self) -> f32 {
+        f32::from(self.output_volume.min(MAX_VOLUME)) / 100.0
     }
 
     /// The linear gain for [`Self::sounds_volume`].
@@ -175,6 +182,7 @@ impl Default for VoiceSettings {
         Self {
             input_device: None,
             output_device: None,
+            output_volume: DEFAULT_VOLUME,
             push_to_talk: false,
             push_to_talk_key: None,
             push_to_talk_sounds: false,
@@ -307,8 +315,11 @@ mod tests {
         assert!(settings.voice.auto_gain);
         assert_eq!(settings.voice.input_gain(), 1.0);
         assert_eq!(settings.voice.sounds_gain(), 1.0);
-        let settings: Settings = serde_json::from_str(r#"{"voice": {"sounds_volume": 40}}"#).unwrap();
+        assert_eq!(settings.voice.output_gain(), 1.0);
+        let voice = r#"{"voice": {"sounds_volume": 40, "output_volume": 900}}"#;
+        let settings: Settings = serde_json::from_str(voice).unwrap();
         assert_eq!(settings.voice.sounds_gain(), 0.4);
+        assert_eq!(settings.voice.output_gain(), 2.0);
         assert!(settings.window.close_to_tray);
         assert_eq!(settings.hotkeys, HotkeySettings::default());
         assert!(settings.appearance.profile_pictures && settings.show_pictures());

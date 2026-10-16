@@ -117,6 +117,11 @@ impl Voice {
         self.receiver().set_gain(user_id, gain);
     }
 
+    /// Playback gain for everyone at once, on top of their own: 1.0 is unchanged, up to 2.0.
+    pub fn set_output_gain(&self, gain: f32) {
+        self.receiver().set_output_gain(gain);
+    }
+
     /// Stops all playback while deafened.
     pub fn set_deafened(&self, deafened: bool) {
         self.receiver().deafened = deafened;
