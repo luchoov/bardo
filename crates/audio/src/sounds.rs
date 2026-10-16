@@ -130,7 +130,13 @@ fn render(notes: &[Note], seconds: f32) -> Vec<f32> {
 }
 
 /// Feeds `samples` to the device in 20 ms frames, paced in real time, while `keep_going` says so.
-fn play_paced(sink: &mut crate::PlaybackSink, samples: &[f32], start: Instant, keep_going: impl Fn() -> bool) -> bool {
+/// Returns whether it played to the end.
+pub fn play_paced(
+    sink: &mut crate::PlaybackSink,
+    samples: &[f32],
+    start: Instant,
+    keep_going: impl Fn() -> bool,
+) -> bool {
     for (index, frame) in samples.chunks(STEREO_FRAME_LEN).enumerate() {
         if !keep_going() {
             return false;

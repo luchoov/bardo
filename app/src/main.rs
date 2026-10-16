@@ -19,8 +19,8 @@ use std::{
 };
 
 use bardo_core::{
-    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest, Release,
-    Ringer, Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
+    AudioDevice, AudioDevices, Client, ClientEvent, Command, ConnectionState, Id, MemberChange, MicTest,
+    MicTestKind, MicTestPhase, Release, Ringer, Snapshot, Sound, TransmitControl, UserAudio, VoiceStatus,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{debug, warn};
@@ -97,8 +97,10 @@ struct App {
     /// Plays while a call we are in rings the others.
     ringback: Option<Ringback>,
     sound_gate: SoundGate,
-    /// Meters the microphone while the settings are open outside voice.
+    /// Meters the microphone while the settings are open outside voice, or lets us hear it.
     mic_test: Option<MicTest>,
+    /// The test that should be running.
+    mic_test_kind: MicTestKind,
     /// A newer version, offered for download.
     update: Option<Release>,
 }
@@ -420,8 +422,19 @@ fn wire_settings(window: &MainWindow) {
                 app.meter.start(slint::TimerMode::Repeated, METER_INTERVAL, move || {
                     let Some(window) = weak.upgrade() else { return };
                     update_mic_test();
-                    let level = APP.with_borrow(|app| app.transmit.level_db());
-                    window.global::<SettingsUi>().set_level(level);
+                    let ui = window.global::<SettingsUi>();
+                    APP.with_borrow(|app| {
+                        ui.set_level(app.transmit.level_db());
+                        ui.set_in_voice(app.snapshot.voice.is_some());
+                        let test = app.mic_test.as_ref();
+                        ui.set_mic_test(match test.map(MicTest::phase) {
+                            Some(MicTestPhase::Listening) => 1,
+                            Some(MicTestPhase::Recording) => 2,
+                            Some(MicTestPhase::Playing) => 3,
+                            _ => 0,
+                        });
+                        ui.set_mic_test_progress(test.map_or(0.0, MicTest::progress));
+                    });
                 });
             });
         }
@@ -433,7 +446,7 @@ fn wire_settings(window: &MainWindow) {
         move || {
             APP.with_borrow_mut(|app| {
                 app.meter.stop();
-                app.mic_test = None;
+                stop_mic_test(app);
                 remember_gain(app);
             });
             if let Some(window) = weak.upgrade() {
@@ -446,7 +459,7 @@ fn wire_settings(window: &MainWindow) {
         update_voice_settings(|voice, app| voice.input_device = device_at(&app.inputs, index));
         // The test restarts on the new device, and automatic gain from what it learned for it.
         APP.with_borrow_mut(|app| {
-            app.mic_test = None;
+            stop_mic_test(app);
             app.transmit.set_auto_gain_db(app.settings.voice.learned_gain());
         });
         send_devices();
@@ -454,8 +467,22 @@ fn wire_settings(window: &MainWindow) {
     });
     ui.on_select_output(|index| {
         update_voice_settings(|voice, app| voice.output_device = device_at(&app.outputs, index));
+        APP.with_borrow_mut(stop_mic_test);
         send_devices();
         render_settings_now();
+    });
+    ui.on_start_mic_test(|kind| {
+        let kind = match kind {
+            1 => MicTestKind::Listen,
+            2 => MicTestKind::Record,
+            _ => MicTestKind::Meter,
+        };
+        APP.with_borrow_mut(|app| {
+            // Let go of the microphone before opening it again.
+            app.mic_test = None;
+            app.mic_test_kind = kind;
+        });
+        update_mic_test();
     });
     ui.on_set_push_to_talk(|enabled| {
         update_voice_settings(|voice, _| voice.push_to_talk = enabled);
@@ -525,7 +552,7 @@ fn wire_settings(window: &MainWindow) {
             let Some(window) = weak.upgrade() else { return };
             let ephemeral = APP.with_borrow_mut(|app| {
                 app.meter.stop();
-                app.mic_test = None;
+                stop_mic_test(app);
                 app.settings.ephemeral
             });
             window.set_settings_open(false);
@@ -686,12 +713,23 @@ fn start_call(channel: &str) {
 /// connection's own capture feeds the meter.
 fn update_mic_test() {
     APP.with_borrow_mut(|app| {
-        if app.snapshot.voice.is_some() || app.mic_test.as_ref().is_some_and(MicTest::is_lost) {
-            // In voice, or the microphone went away: a lost one is opened again on the next tick.
-            app.mic_test = None;
+        let test = app.mic_test.as_ref();
+        if app.snapshot.voice.is_some()
+            || test.is_some_and(MicTest::is_lost)
+            || test.is_some_and(|test| test.phase() == MicTestPhase::Finished)
+        {
+            // In voice, a device went away or the recording was played back: back to the meter,
+            // opened again on the next tick.
+            stop_mic_test(app);
         } else if app.mic_test.is_none() {
-            match MicTest::start(app.settings.voice.input_device.as_deref(), app.transmit.clone()) {
+            let voice = &app.settings.voice;
+            let (input, output) = (voice.input_device.as_deref(), voice.output_device.as_deref());
+            match MicTest::start(app.mic_test_kind, input, output, app.transmit.clone()) {
                 Ok(test) => app.mic_test = Some(test),
+                Err(e) if app.mic_test_kind != MicTestKind::Meter => {
+                    warn!("could not start the microphone test: {e}");
+                    app.mic_test_kind = MicTestKind::Meter;
+                }
                 // Retried on the next tick; say it once.
                 Err(e) if app.meter.running() => {
                     warn!("could not open the microphone for the level meter: {e}");
@@ -701,6 +739,12 @@ fn update_mic_test() {
             }
         }
     });
+}
+
+/// Stops listening or recording; the meter comes back on the next tick if the settings are open.
+fn stop_mic_test(app: &mut App) {
+    app.mic_test = None;
+    app.mic_test_kind = MicTestKind::Meter;
 }
 
 /// Starts or stops the ringtone, and shows who is calling.

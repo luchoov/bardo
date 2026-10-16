@@ -40,7 +40,8 @@ and calls, and nothing else.
 
 - Shows your servers' voice channels and who is in each, live, with friends in voice at the top.
 - Joins a channel with one click. `Ctrl+K` searches every channel and everyone in voice.
-- Push-to-talk or voice activity, with noise suppression and automatic gain control.
+- Push-to-talk or voice activity, with noise suppression and automatic gain control. A microphone
+  test plays you back live, or records a few seconds and plays them the way others hear you.
 - Mute and deafen hotkeys that work in game, without taking the keys away from it.
 - Per-user volume up to 200 % and local mute. Server mute, deafen, move and disconnect when you
   have the permissions.

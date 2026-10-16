@@ -35,7 +35,15 @@ export global SettingsUi {
     in-out property <float> input-volume;
     // Input level in dBFS, refreshed while the page is open.
     in property <float> level;
+    // The microphone test: 0 off (only the meter), 1 listening, 2 recording, 3 playing back.
+    in property <int> mic-test;
+    // How far recording or playing back has got, 0 to 1.
+    in property <float> mic-test-progress;
+    // In voice the call has the microphone, so it cannot be tested here.
+    in property <bool> in-voice;
     callback close();
+    // 0 stops, 1 listens, 2 records and plays back.
+    callback start-mic-test(int);
     callback select-input(int);
     callback select-output(int);
     callback set-push-to-talk(bool);
@@ -171,6 +179,41 @@ export component SettingsPage inherits Rectangle {
                             mark: 100;
                             value <=> SettingsUi.input-volume;
                             changed(value) => { SettingsUi.set-input-volume(value); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        if !SettingsUi.in-voice: HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                // Equal halves, whatever the labels.
+                                preferred-width: 1px;
+                                horizontal-stretch: 1;
+                                text: SettingsUi.mic-test == 1 ? "Stop" : "Test";
+                                icon: Glyph.headphones;
+                                clicked => { SettingsUi.start-mic-test(SettingsUi.mic-test == 1 ? 0 : 1); }
+                            }
+                            Button {
+                                preferred-width: 1px;
+                                horizontal-stretch: 1;
+                                text: SettingsUi.mic-test == 2
+                                    ? "Recording… " + max(1, ceil(5 * (1 - SettingsUi.mic-test-progress))) + " s"
+                                    : SettingsUi.mic-test == 3 ? "Playing back…" : "Record and play back";
+                                icon: SettingsUi.mic-test >= 2 ? Glyph.clear : Glyph.mic;
+                                clicked => { SettingsUi.start-mic-test(SettingsUi.mic-test >= 2 ? 0 : 2); }
+                            }
+                        }
+                        Text {
+                            text: SettingsUi.in-voice
+                                ? "Leave voice to test the microphone here: the call is using it."
+                                : SettingsUi.mic-test == 1 ? "Use headphones: speakers feed back into the microphone."
+                                : SettingsUi.mic-test == 2 ? "Talk for five seconds."
+                                : SettingsUi.mic-test == 3 ? "This is how the others hear you."
+                                : "Test plays your microphone back as you talk. Record and play back lets you hear five "
+                                    + "seconds the way the others do.";
+                            color: SettingsUi.mic-test == 1 ? Theme.warn : Theme.text-3;
+                            font-size: 11.5px;
+                            wrap: word-wrap;
                         }
                     }
                     SettingRow {

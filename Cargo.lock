@@ -575,6 +575,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "nnnoiseless",
+ "opus2",
  "rtrb",
  "tracing",
 ]
@@ -587,6 +588,7 @@ dependencies = [
  "bardo-audio",
  "bardo-gateway",
  "bardo-voice",
+ "rtrb",
  "serde_json",
  "tokio",
  "tracing",
