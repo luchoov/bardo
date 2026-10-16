@@ -470,7 +470,7 @@ export component MainWindow inherits Window {
     property <Row> menu-row;
     property <length> menu-x;
     property <length> menu-y;
-    // 0: actions, 1: "Move to" targets.
+    // 0: actions, 1: "Move to" targets, 2: confirming "Disconnect".
     property <int> menu-page;
     property <float> menu-volume;
     // Bumped by Ctrl+K.
@@ -798,10 +798,7 @@ export component MainWindow inherits Window {
                         text: "Disconnect";
                         icon: Glyph.hang-up;
                         danger: true;
-                        clicked => {
-                            Api.disconnect-member(root.menu-row.guild-id, root.menu-row.id);
-                            menu.close();
-                        }
+                        clicked => { root.menu-page = 2; }
                     }
                 }
 
@@ -826,6 +823,44 @@ export component MainWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+
+                // Disconnecting someone from voice, confirmed first.
+                if root.menu-row.kind == RowKind.participant && root.menu-page == 2: VerticalLayout {
+                    VerticalLayout {
+                        property <bool> me: root.menu-row.is-me;
+                        padding: 8px;
+                        spacing: 4px;
+                        Text {
+                            text: "Disconnect " + (parent.me ? "yourself" : root.menu-row.label) + "?";
+                            color: Theme.text;
+                            font-size: 13px;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "From voice only, not from the server. "
+                                + (parent.me ? "You" : "They") + " can join again.";
+                            color: Theme.text-3;
+                            font-size: 11.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+                    MenuDivider { }
+                    MenuRow {
+                        text: "Disconnect";
+                        icon: Glyph.hang-up;
+                        danger: true;
+                        clicked => {
+                            Api.disconnect-member(root.menu-row.guild-id, root.menu-row.id);
+                            menu.close();
+                        }
+                    }
+                    MenuRow {
+                        text: "Cancel";
+                        icon: Glyph.back;
+                        clicked => { root.menu-page = 0; }
                     }
                 }
 
