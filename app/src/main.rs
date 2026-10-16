@@ -435,6 +435,7 @@ fn wire_settings(window: &MainWindow) {
                     let ui = window.global::<SettingsUi>();
                     APP.with_borrow(|app| {
                         ui.set_level(app.transmit.level_db());
+                        ui.set_transmitting(app.transmit.transmitting());
                         ui.set_in_voice(app.snapshot.voice.is_some());
                         let test = app.mic_test.as_ref();
                         ui.set_mic_test(match test.map(MicTest::phase) {

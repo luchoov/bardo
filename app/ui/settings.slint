@@ -36,6 +36,8 @@ export global SettingsUi {
     in-out property <float> input-volume;
     // Input level in dBFS, refreshed while the page is open.
     in property <float> level;
+    // Whether the microphone would be sent right now, refreshed with the level.
+    in property <bool> transmitting;
     // The microphone test: 0 off (only the meter), 1 listening, 2 recording, 3 playing back.
     in property <int> mic-test;
     // How far recording or playing back has got, 0 to 1.
@@ -77,27 +79,102 @@ component Divider inherits Rectangle {
     background: Theme.border;
 }
 
-// The input level against the voice activity threshold.
-component LevelMeter inherits Rectangle {
+// The input level filling a track, green while transmitting, with the voice activity threshold as
+// a handle on it: drag it, click the track, scroll, or use the arrow keys.
+component ThresholdBar inherits Rectangle {
+    // Both in dBFS, from -100 to 0.
     in property <float> level;
-    in property <float> threshold;
-    height: 6px;
-    border-radius: 3px;
-    background: Theme.track;
-    Rectangle {
-        x: 0;
-        width: parent.width * clamp((root.level + 100) / 100, 0, 1);
-        border-radius: 3px;
-        background: root.level >= root.threshold ? Theme.ok : Theme.text-3;
-        animate width { duration: 50ms; }
+    in-out property <float> threshold;
+    in property <bool> transmitting;
+    callback changed(float);
+
+    height: 22px;
+    min-width: 80px;
+    forward-focus: keys;
+
+    function fraction(db: float) -> float {
+        clamp((db + 100) / 100, 0, 1)
     }
-    Rectangle {
-        x: parent.width * clamp((root.threshold + 100) / 100, 0, 1) - 1px;
-        y: -2px;
-        width: 2px;
-        height: parent.height + 4px;
-        border-radius: 1px;
+
+    function set(db: float) {
+        let next = clamp(round(db), -100, 0);
+        if next != root.threshold {
+            root.threshold = next;
+            root.changed(next);
+        }
+    }
+
+    function set-from(position: length) {
+        root.set((position - 2px) / (root.width - 4px) * 100 - 100);
+    }
+
+    track := Rectangle {
+        y: (parent.height - 8px) / 2;
+        height: 8px;
+        border-radius: 4px;
+        background: Theme.track;
+        clip: true;
+        Rectangle {
+            x: 0;
+            width: parent.width * root.fraction(root.level);
+            background: root.transmitting ? Theme.ok : Theme.text-3;
+            animate width { duration: 50ms; }
+        }
+    }
+    handle := Rectangle {
+        width: touch.pressed ? 6px : 4px;
+        height: parent.height;
+        x: (root.width - 4px) * root.fraction(root.threshold) + (4px - self.width) / 2;
+        border-radius: 2px;
         background: Theme.text;
+        border-width: keys.has-focus ? 1px : 0;
+        border-color: Theme.focus;
+        drop-shadow-blur: 3px;
+        drop-shadow-color: #00000080;
+        animate width { duration: Theme.fast; }
+    }
+    keys := FocusScope {
+        key-pressed(event) => {
+            let step = event.modifiers.shift ? 10 : 1;
+            if event.text == Key.RightArrow || event.text == Key.UpArrow {
+                root.set(root.threshold + step);
+                return accept;
+            } else if event.text == Key.LeftArrow || event.text == Key.DownArrow {
+                root.set(root.threshold - step);
+                return accept;
+            } else if event.text == Key.Home {
+                root.set(-100);
+                return accept;
+            } else if event.text == Key.End {
+                root.set(0);
+                return accept;
+            }
+            reject
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    keys.focus();
+                    root.set-from(self.mouse-x);
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.set-from(self.mouse-x);
+                }
+            }
+            scroll-event(event) => {
+                if event.delta-y > 0 {
+                    root.set(root.threshold + 1);
+                    return accept;
+                } else if event.delta-y < 0 {
+                    root.set(root.threshold - 1);
+                    return accept;
+                }
+                reject
+            }
+        }
     }
 }
 
@@ -278,18 +355,15 @@ export component SettingsPage inherits Rectangle {
                             }
                             Text {
                                 text: round(SettingsUi.threshold) + " dB";
-                                color: Theme.text;
-                                font-size: 12px;
+                                color: Theme.text-3;
+                                font-size: 11px;
+                                vertical-alignment: center;
                             }
                         }
-                        LevelMeter {
+                        ThresholdBar {
                             level: SettingsUi.level;
-                            threshold: SettingsUi.threshold;
-                        }
-                        Slider {
-                            minimum: -100;
-                            maximum: 0;
-                            value <=> SettingsUi.threshold;
+                            transmitting: SettingsUi.transmitting;
+                            threshold <=> SettingsUi.threshold;
                             changed(value) => { SettingsUi.set-threshold(value); }
                         }
                         Text {
