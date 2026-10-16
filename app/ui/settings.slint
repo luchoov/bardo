@@ -175,7 +175,7 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingRow {
                         title: "Automatic gain control";
-                        description: "Keeps your voice at a steady level, like Discord does.";
+                        description: "Keeps your voice at a steady level, like Discord does. Input volume sets how loud.";
                         Toggle {
                             checked: SettingsUi.view.auto-gain;
                             toggled(on) => { SettingsUi.set-auto-gain(on); }

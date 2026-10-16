@@ -17,6 +17,8 @@ pub const DEFAULT_VOLUME: u16 = 100;
 pub const MAX_VOLUME: u16 = 200;
 /// Input volume range in percent, like the official client's.
 pub const MAX_INPUT_VOLUME: u16 = 200;
+/// What [`VoiceSettings::learned_gain`] keeps the system default microphone under.
+const DEFAULT_INPUT_KEY: &str = "default";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Settings {
@@ -112,12 +114,35 @@ pub struct VoiceSettings {
     pub self_deaf: bool,
     /// Short sounds for mute and deafen, people joining and leaving, and calls.
     pub sounds: bool,
+    /// The gain automatic gain control learned for each microphone, in dB, keyed by device id, so
+    /// a voice session starts where the last one left off.
+    pub learned_gain: BTreeMap<String, f32>,
 }
 
 impl VoiceSettings {
     /// The linear gain for [`Self::input_volume`].
     pub fn input_gain(&self) -> f32 {
         f32::from(self.input_volume.min(MAX_INPUT_VOLUME)) / 100.0
+    }
+
+    /// What automatic gain control learned for the chosen microphone.
+    pub fn learned_gain(&self) -> f32 {
+        self.learned_gain.get(self.input_key()).copied().unwrap_or(0.0)
+    }
+
+    /// Keeps `gain_db` for the chosen microphone. Returns whether it changed noticeably.
+    pub fn remember_gain(&mut self, gain_db: f32) -> bool {
+        let gain_db = (gain_db * 10.0).round() / 10.0;
+        if !gain_db.is_finite() || (gain_db - self.learned_gain()).abs() < 0.1 {
+            return false;
+        }
+        let key = self.input_key().to_owned();
+        self.learned_gain.insert(key, gain_db);
+        true
+    }
+
+    fn input_key(&self) -> &str {
+        self.input_device.as_deref().unwrap_or(DEFAULT_INPUT_KEY)
     }
 }
 
@@ -136,6 +161,7 @@ impl Default for VoiceSettings {
             self_mute: false,
             self_deaf: false,
             sounds: true,
+            learned_gain: BTreeMap::new(),
         }
     }
 }
@@ -252,6 +278,26 @@ mod tests {
         assert_eq!(settings.voice.input_gain(), 1.0);
         assert!(settings.window.close_to_tray);
         assert_eq!(settings.hotkeys, HotkeySettings::default());
+    }
+
+    #[test]
+    fn learned_gain_is_kept_per_microphone() {
+        let mut voice = VoiceSettings::default();
+        assert_eq!(voice.learned_gain(), 0.0);
+        assert!(voice.remember_gain(7.26));
+        assert!(!voice.remember_gain(7.3));
+        voice.input_device = Some("{headset}".into());
+        assert_eq!(voice.learned_gain(), 0.0);
+        assert!(voice.remember_gain(-3.0));
+        voice.input_device = None;
+        assert_eq!(voice.learned_gain(), 7.3);
+
+        let json = serde_json::to_string(&voice).unwrap();
+        let parsed: VoiceSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.learned_gain, voice.learned_gain);
+        // Files from before it was kept still load.
+        let older: VoiceSettings = serde_json::from_str(r#"{"auto_gain": true}"#).unwrap();
+        assert!(older.learned_gain.is_empty());
     }
 
     #[test]

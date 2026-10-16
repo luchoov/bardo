@@ -145,6 +145,7 @@ fn main() -> Result<(), slint::PlatformError> {
         app.window = Some(window.as_weak());
         app.settings = Settings::load();
         apply_voice_settings(&app.transmit, &app.settings.voice);
+        app.transmit.set_auto_gain_db(app.settings.voice.learned_gain());
         let hotkeys = Hotkeys::start(app.transmit.clone(), |action| {
             let _ = slint::invoke_from_event_loop(move || match action {
                 Action::ToggleMute => toggle_mute(),
@@ -235,7 +236,10 @@ fn main() -> Result<(), slint::PlatformError> {
         save_geometry(&window);
     }
     window.hide()?;
-    APP.with_borrow_mut(|app| app.tray = None);
+    APP.with_borrow_mut(|app| {
+        app.tray = None;
+        remember_gain(app);
+    });
     if let Some(client) = APP.with_borrow_mut(|app| app.client.take()) {
         client.shutdown();
     }
@@ -430,6 +434,7 @@ fn wire_settings(window: &MainWindow) {
             APP.with_borrow_mut(|app| {
                 app.meter.stop();
                 app.mic_test = None;
+                remember_gain(app);
             });
             if let Some(window) = weak.upgrade() {
                 window.set_settings_open(false);
@@ -437,9 +442,13 @@ fn wire_settings(window: &MainWindow) {
         }
     });
     ui.on_select_input(|index| {
+        APP.with_borrow_mut(remember_gain);
         update_voice_settings(|voice, app| voice.input_device = device_at(&app.inputs, index));
-        // The test restarts on the new device.
-        APP.with_borrow_mut(|app| app.mic_test = None);
+        // The test restarts on the new device, and automatic gain from what it learned for it.
+        APP.with_borrow_mut(|app| {
+            app.mic_test = None;
+            app.transmit.set_auto_gain_db(app.settings.voice.learned_gain());
+        });
         send_devices();
         render_settings_now();
     });
@@ -598,6 +607,9 @@ fn on_client_event(window: &MainWindow, event: ClientEvent) {
         }
         ClientEvent::Snapshot(snapshot) => {
             APP.with_borrow_mut(|app| {
+                if app.snapshot.voice.is_some() && snapshot.voice.is_none() {
+                    remember_gain(app);
+                }
                 if snapshot.voice.is_none() {
                     let me = snapshot.me.as_ref().map(|(id, _)| *id);
                     app.speaking.retain(|id| Some(*id) == me);
@@ -869,6 +881,13 @@ fn update_voice_settings(update: impl FnOnce(&mut VoiceSettings, &App)) {
         app.settings.voice = voice;
         app.settings.save();
     });
+}
+
+/// Keeps what automatic gain control learned for the microphone, for the next session.
+fn remember_gain(app: &mut App) {
+    if app.settings.voice.remember_gain(app.transmit.auto_gain_db()) {
+        app.settings.save();
+    }
 }
 
 fn apply_voice_settings(transmit: &TransmitControl, voice: &VoiceSettings) {
