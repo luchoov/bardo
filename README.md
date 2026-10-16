@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/tour.gif" width="380" alt="Two people join a voice channel and talk, then a search for Mati">
+  <img src="docs/images/tour.gif" width="380" alt="Two people join a voice channel and talk, then a search for pepe">
 </p>
 
 The Discord app is a whole browser. If all you use it for is talking with friends while you play,

@@ -30,7 +30,7 @@ pub fn settings() -> bool {
 
 /// What `BARDO_DEMO=search` types into the search field.
 pub fn search() -> Option<&'static str> {
-    std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "search").then_some("cr")
+    std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "search").then_some("mix")
 }
 
 pub fn tour() -> bool {
@@ -65,15 +65,15 @@ pub fn tour_script() -> Vec<(TourStep, Duration)> {
     let ms = Duration::from_millis;
     vec![
         (TourStep::Snapshot(Box::new(base.clone())), ms(1000)),
-        (joined(&[(120, "Nico")]), ms(900)),
-        (joined(&[(120, "Nico"), (121, "Rama")]), ms(900)),
-        (TourStep::Speaking(&[120]), ms(900)),
+        (joined(&[(140, "paquito")]), ms(900)),
+        (joined(&[(140, "paquito"), (141, "SchnitzelLord")]), ms(900)),
+        (TourStep::Speaking(&[140]), ms(900)),
         (TourStep::Speaking(&[101]), ms(700)),
-        (TourStep::Speaking(&[101, 121]), ms(900)),
+        (TourStep::Speaking(&[101, 141]), ms(900)),
         (TourStep::Speaking(&[]), ms(1000)),
-        (TourStep::Search("m"), ms(250)),
-        (TourStep::Search("ma"), ms(250)),
-        (TourStep::Search("mat"), ms(2000)),
+        (TourStep::Search("p"), ms(250)),
+        (TourStep::Search("pe"), ms(250)),
+        (TourStep::Search("pep"), ms(2000)),
         (TourStep::Search(""), ms(1200)),
     ]
 }
@@ -91,7 +91,7 @@ const OUR_CHANNEL: Id = Id(10);
 const FANTA_DM: Id = Id(62);
 
 /// We join, people come and go (two at once, which must not stack up), our own cues play, then we
-/// call Fanta, who answers after a few rings and hangs up.
+/// call fantaakd, who answers after a few rings and hangs up.
 pub fn sound_script() -> Vec<Step> {
     let base = snapshot();
     let with_channel = |update: &dyn Fn(&mut Vec<Participant>)| {
@@ -105,14 +105,14 @@ pub fn sound_script() -> Vec<Step> {
         name: name.to_owned(),
         ..base.guilds[0].channels[0].participants[1].clone()
     };
-    let nico = with_channel(&|people| people.push(newcomer(120, "Nico")));
+    let paquito = with_channel(&|people| people.push(newcomer(140, "paquito")));
     let crowd = with_channel(&|people| {
-        people.push(newcomer(120, "Nico"));
-        people.push(newcomer(121, "Rama"));
-        people.push(newcomer(122, "Mati"));
+        people.push(newcomer(140, "paquito"));
+        people.push(newcomer(141, "SchnitzelLord"));
+        people.push(newcomer(142, "Jürgen"));
     });
     let fanta_left = with_channel(&|people| {
-        people.extend([newcomer(120, "Nico"), newcomer(121, "Rama"), newcomer(122, "Mati")]);
+        people.extend([newcomer(140, "paquito"), newcomer(141, "SchnitzelLord"), newcomer(142, "Jürgen")]);
         people.retain(|p| p.user_id != Id(101));
     });
 
@@ -123,7 +123,7 @@ pub fn sound_script() -> Vec<Step> {
             guild_id: None,
             channel_id: FANTA_DM,
             guild_name: "Call".to_owned(),
-            channel_name: "Fanta".to_owned(),
+            channel_name: "fantaakd".to_owned(),
             status: VoiceStatus::Connected,
             self_mute: false,
             self_deaf: false,
@@ -132,7 +132,7 @@ pub fn sound_script() -> Vec<Step> {
         participants.extend(others.iter().map(|&(id, name)| newcomer(id, name)));
         snapshot.calls.push(CallView {
             channel_id: FANTA_DM,
-            name: "Fanta".to_owned(),
+            name: "fantaakd".to_owned(),
             group: false,
             participants,
             ringing_me: false,
@@ -144,7 +144,7 @@ pub fn sound_script() -> Vec<Step> {
     let mut steps = vec![
         Step::Sound(Sound::Join),
         Step::Snapshot(Box::new(base.clone())),
-        Step::Snapshot(Box::new(nico)),
+        Step::Snapshot(Box::new(paquito)),
         Step::Snapshot(Box::new(crowd)),
         Step::Snapshot(Box::new(fanta_left)),
         Step::Wait,
@@ -172,7 +172,7 @@ pub fn sound_script() -> Vec<Step> {
         Step::Wait,
         Step::Wait,
         Step::Wait,
-        Step::Snapshot(Box::new(call(&[(101, "Fanta")], false))),
+        Step::Snapshot(Box::new(call(&[(101, "fantaakd")], false))),
         Step::Wait,
         Step::Snapshot(Box::new(call(&[], false))),
         Step::Wait,
@@ -226,14 +226,14 @@ pub fn snapshot() -> Snapshot {
             channels: vec![
                 limited(10, "Contador Público", 20, vec![
                     Participant { is_me: true, ..participant(100, "LuchovG") },
-                    friend(101, "Fanta"),
-                    Participant { server_mute: true, ..friend(102, "Santijaja") },
+                    friend(101, "fantaakd"),
+                    Participant { server_mute: true, ..friend(102, "netanyahu") },
                     Participant { streaming: true, ..friend(103, "Titino") },
                 ]),
                 limited(11, "Ministerio de Counter", 20, vec![Participant {
                     self_deaf: true,
                     self_mute: true,
-                    ..friend(104, "Dante")
+                    ..friend(104, "brucman")
                 }]),
                 limited(12, "Campo prendido", 67, Vec::new()),
                 channel(13, "Escuela", Vec::new()),
@@ -242,22 +242,22 @@ pub fn snapshot() -> Snapshot {
         },
         GuildView {
             id: Id(2),
-            name: "GTA MONEY DROPS!".to_owned(),
+            name: "Schnitzel Squad".to_owned(),
             channels: vec![
-                channel(20, "Social 1", vec![stranger(110, "fanta"), stranger(111, "xX_Drop_Xx")]),
-                channel(21, "Social 2", Vec::new()),
-                limited(22, "Crew 1", 4, Vec::new()),
-                limited(23, "Crew 2", 4, Vec::new()),
+                channel(20, "Lounge", vec![stranger(110, "Klausi"), stranger(111, "mic_off_again")]),
+                channel(21, "Beer garden", Vec::new()),
+                limited(22, "Raid 1", 4, Vec::new()),
+                limited(23, "Raid 2", 4, Vec::new()),
             ],
         },
         GuildView {
             id: Id(3),
-            name: "CS2 Argentina".to_owned(),
+            name: "Clutch or Kick".to_owned(),
             channels: (0..12)
                 .map(|n| {
                     let people = match n {
-                        0 => vec![stranger(120, "Nico"), stranger(121, "Rama"), friend(122, "Mati")],
-                        3 => vec![stranger(123, "pibe_awp"), stranger(124, "elcapo")],
+                        0 => vec![stranger(120, "Hans_AWP"), stranger(121, "Wurstmeister"), friend(122, "pepe")],
+                        3 => vec![stranger(123, "touchgrass"), stranger(124, "Kevin.exe")],
                         _ => Vec::new(),
                     };
                     limited(30 + n, &format!("Mix #{}", n + 1), 5, people)
@@ -266,8 +266,8 @@ pub fn snapshot() -> Snapshot {
         },
         GuildView {
             id: Id(4),
-            name: "Rust en Español".to_owned(),
-            channels: vec![channel(40, "Charla", Vec::new()), channel(41, "Pair programming", Vec::new())],
+            name: "Rustaceans".to_owned(),
+            channels: vec![channel(40, "General", Vec::new()), channel(41, "Pair programming", Vec::new())],
         },
     ];
 
@@ -294,25 +294,30 @@ pub fn snapshot() -> Snapshot {
     let calls = vec![
         CallView {
             channel_id: Id(60),
-            name: "Dante".to_owned(),
+            name: "brucman".to_owned(),
             group: false,
-            participants: vec![Participant { moderation: Moderation::default(), ..friend(104, "Dante") }],
+            participants: vec![Participant { moderation: Moderation::default(), ..friend(104, "brucman") }],
             ringing_me: std::env::var_os("BARDO_DEMO").is_some_and(|value| value == "call"),
             ringing_others: false,
         },
         CallView {
             channel_id: Id(61),
-            name: "Los pibes".to_owned(),
+            name: "Saturday squad".to_owned(),
             group: true,
-            participants: vec![stranger(120, "Nico"), stranger(121, "Rama")],
+            participants: vec![stranger(140, "paquito"), stranger(110, "Klausi")],
             ringing_me: false,
             ringing_others: false,
         },
     ];
     let private_channels = vec![
-        PrivateChannelView { id: Id(60), name: "Dante".to_owned(), group: false, recipients: vec![Id(104)] },
-        PrivateChannelView { id: Id(61), name: "Los pibes".to_owned(), group: true, recipients: vec![Id(120), Id(121)] },
-        PrivateChannelView { id: Id(62), name: "Fanta".to_owned(), group: false, recipients: vec![Id(101)] },
+        PrivateChannelView { id: Id(60), name: "brucman".to_owned(), group: false, recipients: vec![Id(104)] },
+        PrivateChannelView {
+            id: Id(61),
+            name: "Saturday squad".to_owned(),
+            group: true,
+            recipients: vec![Id(140), Id(110)],
+        },
+        PrivateChannelView { id: Id(62), name: "fantaakd".to_owned(), group: false, recipients: vec![Id(101)] },
     ];
 
     Snapshot {
