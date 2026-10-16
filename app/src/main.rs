@@ -4,6 +4,7 @@ mod cue;
 #[cfg(debug_assertions)]
 mod demo;
 mod hotkey;
+mod logging;
 mod settings;
 mod token;
 mod view;
@@ -23,7 +24,6 @@ use bardo_core::{
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing::{debug, warn};
-use tracing_subscriber::EnvFilter;
 
 use crate::{
     cue::SoundGate,
@@ -110,12 +110,11 @@ thread_local! {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .init();
+    logging::init();
     token::init();
-    // Dependencies enable both rustls crypto backends, so rustls cannot pick one by itself.
-    if rustls::crypto::aws_lc_rs::default_provider().install_default().is_err() {
+    // reqwest only uses a process-wide rustls crypto provider; songbird and the gateway's websocket
+    // already bring ring.
+    if rustls::crypto::ring::default_provider().install_default().is_err() {
         warn!("a TLS crypto provider was already installed");
     }
 
@@ -471,6 +470,12 @@ fn wire_settings(window: &MainWindow) {
         update_voice_settings(|voice, _| voice.sounds = enabled);
         with_window(update_ringing);
         render_settings_now();
+    });
+    ui.on_open_logs(|| {
+        let Some(dir) = logging::dir() else { return };
+        if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
+            warn!("failed to open {}: {e}", dir.display());
+        }
     });
     ui.on_set_close_to_tray(|enabled| {
         update_settings(|settings| settings.window.close_to_tray = enabled);

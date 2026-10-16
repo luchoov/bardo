@@ -9,8 +9,12 @@ publish.workspace = true
 bardo-gateway = { version = "0.1.0", path = "../gateway" }
 base64 = "0.22.1"
 iana-time-zone = "0.1.65"
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "gzip", "brotli", "deflate"] }
+# No crypto provider of its own: the app installs ring, which songbird and the gateway already use.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2", "gzip", "brotli", "deflate"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.53.3", features = ["sync", "time"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+rustls = { version = "0.23.46", default-features = false, features = ["ring"] }

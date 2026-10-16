@@ -6,6 +6,12 @@ members = ["app", "crates/*"]
 [profile.dev.package."*"]
 opt-level = 2
 
+# Panics still unwind: one in a background task (tokio, songbird) is contained instead of closing the app.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace.package]
 edition = "2024"
 license = "MIT"

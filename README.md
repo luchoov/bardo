@@ -20,9 +20,7 @@ out of the way of your game's frame time and memory.
   for your own mute and deafen.
 - Runs alongside the official client: keep Discord closed while you play, or use it for text.
 
-> **Status:** early development. Server voice works end to end (with DAVE): joining, listening,
-> talking, moderation. DM and group calls (call, answer, decline, ring) are implemented but not yet
-> verified against Discord.
+> **Status:** early. Server voice (with DAVE), moderation, and DM and group calls work end to end.
 
 > **Disclaimer:** bardo is not affiliated with or endorsed by Discord. Using a user account from an
 > unofficial client is against Discord's Terms of Service and may get the account banned. Use at your own risk.
@@ -83,14 +81,13 @@ Threads: a tokio runtime for networking, dedicated real-time threads for audio, 
 2. Moderation: context menu (mute/deafen/move/disconnect). *(done)*
 3. Voice — receive: join and listen (validates DAVE). *(done)*
 4. Voice — send: microphone, PTT, VAD, input gain. *(done)*
-5. DM / group calls. *(implemented: ongoing calls listed, incoming call card with a ringtone,
-   calling rings the others; needs a live test)*
+5. DM / group calls. *(done)*
 6. Polish: tray, global hotkeys, own UI components, friends in voice, pinned servers, search. *(done)*
 7. Release build and installer; memory and CPU numbers against the official client.
 
 ## Build
 
-Requirements: Rust stable (MSVC), Visual Studio Build Tools with C++ and the Windows SDK, CMake.
+Requirements: Rust stable (MSVC), Visual Studio Build Tools with C++ and the Windows SDK.
 
 ```
 cargo run -p bardo
@@ -106,6 +103,19 @@ To get it, open Discord in a browser, open DevTools → Network, click any reque
 and copy the `Authorization` request header.
 
 The token grants full access to the account: never share it or commit it.
+
+## Windows SmartScreen and antivirus
+
+bardo.exe is not code-signed, so Windows SmartScreen warns the first time you run it ("More info" →
+"Run anyway"). Some antivirus heuristics may also flag it: it reads the keyboard state from a
+background thread (for push-to-talk and the mute/deafen hotkeys, so the keys still reach the game),
+stores a token and connects to the internet. It never records which keys you type; it only checks
+the keys you bound. The source is all here, and you can build it yourself.
+
+## Bug reports
+
+bardo writes a log to `%LOCALAPPDATA%\bardo\bardo.log` (Settings → Logs → Open folder). Attach it to
+the issue. It never contains your token, but it does contain server, channel and user ids.
 
 ## Development
 

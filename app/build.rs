@@ -7,8 +7,10 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         winresource::WindowsResource::new()
             .set_icon("assets/bardo.ico")
-            .set("FileDescription", "bardo")
+            .set("FileDescription", "bardo, a voice-only Discord client")
             .set("ProductName", "bardo")
+            .set("OriginalFilename", "bardo.exe")
+            .set("LegalCopyright", "MIT License")
             .compile()
             .expect("failed to embed the Windows resources");
     }

@@ -2,8 +2,9 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs, io,
-    path::PathBuf,
+    fs::{self, File},
+    io::{self, Write},
+    path::{Path, PathBuf},
 };
 
 use bardo_core::{DEFAULT_THRESHOLD_DB, Id};
@@ -158,7 +159,12 @@ impl Settings {
         let Some(path) = path() else { return Self::default() };
         match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                warn!("ignoring unreadable settings file {}: {e}", path.display());
+                // Set aside rather than overwritten by the next save, so it can still be recovered.
+                let kept = path.with_extension("json.bad");
+                warn!("unreadable settings file {} ({e}), moved to {}", path.display(), kept.display());
+                if let Err(e) = fs::rename(&path, &kept) {
+                    warn!("failed to move the unreadable settings file: {e}");
+                }
                 Self::default()
             }),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Self::default(),
@@ -177,7 +183,7 @@ impl Settings {
         let result = path
             .parent()
             .map_or(Ok(()), fs::create_dir_all)
-            .and_then(|_| fs::write(&path, serde_json::to_vec_pretty(self).unwrap_or_default()));
+            .and_then(|_| write_replacing(&path, &serde_json::to_vec_pretty(self).unwrap_or_default()));
         if let Err(e) = result {
             warn!("failed to save settings: {e}");
         }
@@ -201,6 +207,17 @@ impl Settings {
 
 fn path() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("bardo").join("settings.json"))
+}
+
+/// Writes a temporary file next to `path` and renames it over `path`, so being killed halfway leaves
+/// the previous settings rather than a truncated file.
+fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp = path.with_extension("json.tmp");
+    let mut file = File::create(&temp)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    drop(file);
+    fs::rename(&temp, path)
 }
 
 #[cfg(test)]
@@ -247,6 +264,18 @@ mod tests {
         servers.set_pinned(Id(1), false);
         assert_eq!(servers.pinned, [Id(2)]);
         assert!(servers.is_pinned(Id(2)));
+    }
+
+    #[test]
+    fn saving_replaces_the_whole_file() {
+        let dir = std::env::temp_dir().join(format!("bardo-settings-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(&path, "older and longer").unwrap();
+        write_replacing(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert!(!path.with_extension("json.tmp").exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

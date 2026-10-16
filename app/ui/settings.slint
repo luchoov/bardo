@@ -49,6 +49,7 @@ export global SettingsUi {
     callback set-autostart(bool);
     callback set-sounds(bool);
     callback set-close-to-tray(bool);
+    callback open-logs();
     callback sign-out();
 }
 
@@ -339,6 +340,14 @@ export component SettingsPage inherits Rectangle {
                         Toggle {
                             checked: SettingsUi.view.close-to-tray;
                             toggled(on) => { SettingsUi.set-close-to-tray(on); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Logs";
+                        description: "What bardo noted while running. Attach bardo.log to a bug report.";
+                        Button {
+                            text: "Open folder";
+                            clicked => { SettingsUi.open-logs(); }
                         }
                     }
                 }

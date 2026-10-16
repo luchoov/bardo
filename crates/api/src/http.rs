@@ -300,6 +300,7 @@ mod tests {
     use super::*;
 
     fn http() -> Http {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let mut properties = ClientProperties::web(120, 400_000);
         properties.system_locale = "es-AR".into();
         Http::new("secret-token", &properties).unwrap()
