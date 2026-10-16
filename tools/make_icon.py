@@ -1,10 +1,9 @@
-"""Draws the bardo icon: a geometric lowercase "b" whose bowl opens into a sound wave, flat and
-monochrome on a near-black rounded tile.
+"""Draws the bardo icon: a lowercase "b" with a sound wave in its bowl, flat and monochrome on a
+near-black rounded tile.
 
 Usage: python tools/make_icon.py [out_dir] [variant]   (default: app/assets; needs Pillow)
 Variants: dark (default), light, outline. With "preview", draws all of them side by side.
 """
-import math
 import sys
 
 from PIL import Image, ImageDraw
@@ -13,36 +12,51 @@ S = 1024
 INK = (236, 236, 238, 255)
 TILE = (14, 14, 16, 255)
 EDGE = (44, 44, 50, 255)
+# The wave is a step quieter than the letter.
+WAVE = (196, 196, 200, 255)
+WAVE_ON_LIGHT = (92, 92, 98, 255)
 
 
-def arc_band(draw, cx, cy, r_out, width, start, end, fill, caps=True):
-    """A ring segment with round caps."""
-    r_mid = r_out - width / 2
-    draw.arc((cx - r_out, cy - r_out, cx + r_out, cy + r_out), start, end, fill=fill, width=round(width))
-    if caps:
-        for angle in (start, end):
-            x = cx + r_mid * math.cos(math.radians(angle))
-            y = cy + r_mid * math.sin(math.radians(angle))
-            draw.ellipse((x - width / 2, y - width / 2, x + width / 2, y + width / 2), fill=fill)
+# The mark, drawn on a 1254 px grid and scaled into the tile: the stem's left edge is the bowl's.
+SCALE = 0.87
+CENTER = (646, 635)
+STEM = (387, 523, 290)  # left, right, top
+STEM_CORNER = 92  # the top right corner, rounded like a flag; the top left is nearly square
+BOWL = (646, 722, 259)  # centre and outer radius
+# Bars of a sound wave inside the bowl: centre x, height. Few and wide at icon sizes, where five
+# thin ones would blur into one.
+BARS = [(533, 64), (589, 128), (645, 210), (701, 128), (757, 64)]
+BARS_SMALL = [(575, 96), (645, 190), (715, 96)]
 
 
-def mark(draw, ink, variant, small):
-    """A geometric "b" (a stem and a full circle) with one sound wave around the bowl."""
-    stroke = 124 if small else 88
-    r_bowl = 214 if small else 200
-    wave = 0 if small else 70
-    gap = 60
-    width = 2 * r_bowl if not wave else r_bowl + r_bowl + gap + wave
-    stem_x = (S - width) / 2
-    top, cy = (196, 618) if not small else (180, 630)
-    cx = stem_x + r_bowl
-    # The stem: round top, square foot hidden in the bowl.
-    draw.rounded_rectangle((stem_x, top, stem_x + stroke, cy), radius=stroke / 2, fill=ink)
-    draw.rectangle((stem_x, top + stroke, stem_x + stroke, cy), fill=ink)
-    # The bowl.
-    arc_band(draw, cx, cy, r_bowl, stroke, 0, 360, ink, caps=False)
-    if wave:
-        arc_band(draw, cx, cy, r_bowl + gap + wave, wave, -50, 50, ink)
+def at(x, y):
+    return (x - CENTER[0]) * SCALE + S / 2, (y - CENTER[1]) * SCALE + S / 2
+
+
+def mark(small):
+    """Masks for a lowercase "b" with a sound wave in its bowl: the letter, and the bars."""
+    letter = Image.new('L', (S, S), 0)
+    d = ImageDraw.Draw(letter)
+    cx, cy, r = BOWL
+    hole = 132 if small else 163
+    (x0, y0), (x1, y1) = at(cx - r, cy - r), at(cx + r, cy + r)
+    d.ellipse((x0, y0, x1, y1), fill=255)
+    left, right, top = STEM
+    (x0, y0), (x1, y1) = at(left, top), at(right, cy)
+    d.rounded_rectangle((x0, y0, x1, y1), radius=14 * SCALE, fill=255)
+    corner = STEM_CORNER * SCALE
+    d.rectangle((x1 - corner, y0 - 2, x1 + 2, y0 + corner), fill=0)
+    d.pieslice((x1 - 2 * corner, y0, x1, y0 + 2 * corner), 270, 360, fill=255)
+    (x0, y0), (x1, y1) = at(cx - 5 - hole, cy - hole), at(cx - 5 + hole, cy + hole)
+    d.ellipse((x0, y0, x1, y1), fill=0)
+
+    bars = Image.new('L', (S, S), 0)
+    d = ImageDraw.Draw(bars)
+    width = 40 if small else 30
+    for x, height in BARS_SMALL if small else BARS:
+        (x0, y0), (x1, y1) = at(x - width / 2, 729 - height / 2), at(x + width / 2, 729 + height / 2)
+        d.rounded_rectangle((x0, y0, x1, y1), radius=width * SCALE / 2, fill=255)
+    return letter, bars
 
 
 def render(variant='dark', small=False):
@@ -52,13 +66,16 @@ def render(variant='dark', small=False):
     box = (inset, inset, S - inset, S - inset)
     if variant == 'light':
         d.rounded_rectangle(box, radius=220, fill=INK)
-        mark(d, TILE, variant, small)
+        ink, wave = TILE, WAVE_ON_LIGHT
     elif variant == 'outline':
         d.rounded_rectangle(box, radius=220, fill=TILE, outline=INK, width=36)
-        mark(d, INK, variant, small)
+        ink, wave = INK, WAVE
     else:
         d.rounded_rectangle(box, radius=220, fill=TILE, outline=EDGE, width=8)
-        mark(d, INK, variant, small)
+        ink, wave = INK, WAVE
+    letter, bars = mark(small)
+    img.paste(ink, mask=letter)
+    img.paste(wave, mask=bars)
     return img
 
 
