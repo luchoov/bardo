@@ -1,141 +1,116 @@
-# bardo
+<p align="center">
+  <img src="app/assets/icon.png" width="72" alt="">
+</p>
 
-**An ultra-lightweight, voice-only Discord client for gaming.**
+<h1 align="center">bardo</h1>
 
-Playing CS2 (or anything else) and only need your squad in your ears? bardo does one thing: voice channels.
-No Electron, no embedded browser, no chat, no feeds — a small native Rust binary for Windows 11 that stays
-out of the way of your game's frame time and memory.
+<p align="center">
+  A small Discord client for Windows that only does voice.
+</p>
 
-- See where your friends are talking, across all your servers, and join them in one click.
-- Pin the servers you use; the rest stay folded away, and so do empty channels. Ctrl+K searches
-  every channel and everyone in voice.
-- Push-to-talk, or voice activity with noise suppression and automatic gain control.
-- Global hotkeys for mute and deafen that do not take the keys away from the game.
-- Per-user volume (0–200 %) and local mute; server mute, deafen, move and disconnect for admins.
-- DM and group calls: call from search (Ctrl+K) or a friend's menu, answer or decline incoming ones.
-- Lives in the tray and can start with Windows.
-- Short, quiet sounds: mute and deafen (also when an admin sets them), joining, leaving, being
-  moved or disconnected, people coming and going in your channel or call, the ringtone and the
-  ringback of calls, and optionally a click on push-to-talk. Silent while you are deafened, except
-  for your own mute and deafen.
-- Runs alongside the official client: keep Discord closed while you play, or use it for text.
+<p align="center">
+  <a href="https://github.com/luchoov/bardo/releases/latest/download/bardo-setup.exe"><b>Download the installer</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/luchoov/bardo/releases/latest/download/bardo.exe">Portable exe</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/luchoov/bardo/releases">All releases</a>
+</p>
 
-> **Status:** early. Server voice (with DAVE), moderation, and DM and group calls work end to end.
+<p align="center">
+  <a href="https://github.com/luchoov/bardo/actions/workflows/ci.yml"><img src="https://github.com/luchoov/bardo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/luchoov/bardo/releases/latest"><img src="https://img.shields.io/github/v/release/luchoov/bardo" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/luchoov/bardo" alt="MIT license"></a>
+</p>
 
-> **Disclaimer:** bardo is not affiliated with or endorsed by Discord. Using a user account from an
-> unofficial client is against Discord's Terms of Service and may get the account banned. Use at your own risk.
+<p align="center">
+  <img src="docs/images/tour.gif" width="380" alt="Two people join a voice channel and talk, then a search for Mati">
+</p>
 
-## Scope
+The Discord app is a whole browser. If all you use it for is talking with friends while you play,
+that is a lot of memory and CPU for a voice call. bardo is a native client that does voice channels
+and calls, and nothing else.
 
-**MVP**
-- Token login (stored in Windows Credential Manager).
-- Servers → voice channels → who is in each one (with their mute/deafen state).
-- DMs and group DMs: incoming calls (ring), answer, call, hang up.
-- Join / leave / switch channels. Speaking indicator.
-- Self mute / deafen. Push-to-talk with a global hotkey, or VAD with a threshold.
-- Input and output device selection, hot-swappable.
-- Noise suppression (RNNoise).
-- Context menu on a user:
-  - Local: volume 0–200 %, local mute.
-  - Moderation (based on effective permissions): server mute, server deafen, move to ▸, disconnect.
-- System tray, global mute/deafen hotkeys, start with Windows.
-- Voice sounds, synthesized: own mute/deafen, server mute/deafen, join, leave, moved, disconnected;
-  others joining and leaving our channel or call; ringtone, ringback and call ended; push-to-talk
-  (off by default). Like the official client, nothing plays when others mute or deafen.
+## What it does
 
-**Out of scope**: text, video, screen share / Go Live, soundboard (the event is never handled, so it never plays), Stage.
-No echo cancellation: headphones are assumed.
+<p>
+  <img src="docs/images/main.png" width="32%" alt="Calls, friends in voice and a server's voice channels">
+  <img src="docs/images/call.png" width="32%" alt="An incoming call">
+  <img src="docs/images/settings.png" width="32%" alt="Voice settings">
+</p>
 
-## Stack
+- Shows your servers' voice channels and who is in each, live, with friends in voice at the top.
+- Joins a channel with one click. `Ctrl+K` searches every channel and everyone in voice.
+- Push-to-talk or voice activity, with noise suppression and automatic gain control.
+- Mute and deafen hotkeys that work in game, without taking the keys away from it.
+- Per-user volume up to 200 % and local mute. Server mute, deafen, move and disconnect when you
+  have the permissions.
+- DM and group calls: call, answer, decline.
+- Lives in the tray and can start with Windows. Short, quiet sounds for joins, leaves, mute and
+  deafen.
+- Voice is end-to-end encrypted (DAVE), like in the official client.
 
-| Piece | Choice |
-|---|---|
-| Language | Rust (edition 2024) |
-| UI | Slint |
-| Main gateway | Custom (`tokio-tungstenite`, `zlib-stream`); user-account identify, not bot |
-| Client identity | Discord web client on Chrome/Windows; Chrome version and build number fetched at startup |
-| Voice (voice WS, UDP/RTP, encryption, DAVE, Opus) | `songbird` 0.6, `driver` + `receive` only (DAVE via `davey`) |
-| Audio I/O | WASAPI, through `cpal` |
-| DSP | `nnnoiseless` (RNNoise), custom VAD |
+## bardo and Discord side by side
 
-DAVE (voice E2EE) has been mandatory for every call since March 1, 2026.
+Both signed in to the same account on the same PC, idle and not in a call, for three minutes:
 
-## Layout
+| | bardo 0.1.0 | Discord 1.0.9262 |
+|---|---|---|
+| Memory | 23 MB | 374 MB |
+| CPU | 0.0 % | 1.1 % |
+| Processes | 1 | 6 |
+| On disk | 29 MB | 450 MB |
 
-```
-crates/
-  gateway/  Main WS: identify, heartbeat, resume, READY, voice states, op 4
-  api/      Minimal REST: moderation (PATCH member), DM calls, member data
-  voice/    Voice connection on top of songbird
-  audio/    WASAPI capture/playback, mixing, per-user volume, RNNoise, VAD
-  core/     State + effective permissions + orchestration; command/event API for the UI
-app/        Slint binary: view, global hotkeys, tray
-tools/      make_icon.py draws the icon
-```
+Memory is the private working set, the "Memory" column in Task Manager, added up over every
+process. CPU is the share of the whole machine, an Intel Core i7-7700 on Windows 11. Both windows
+were open. [tools/bench.ps1](tools/bench.ps1) measures both on your own PC while you use them.
 
-Threads: a tokio runtime for networking, dedicated real-time threads for audio, the Slint event loop on the main thread; channels in between.
+## What it doesn't do
 
-## Roadmap
+No text chat, video, screen sharing, soundboard or Stage channels. There is no echo cancellation,
+so use headphones. Windows 10 and 11, 64-bit only.
 
-1. Gateway: servers and voice channels with who is in each, live. *(done)*
-2. Moderation: context menu (mute/deafen/move/disconnect). *(done)*
-3. Voice — receive: join and listen (validates DAVE). *(done)*
-4. Voice — send: microphone, PTT, VAD, input gain. *(done)*
-5. DM / group calls. *(done)*
-6. Polish: tray, global hotkeys, own UI components, friends in voice, pinned servers, search. *(done)*
-7. Release build and installer; memory and CPU numbers against the official client.
+You can keep the official client for text and close it while you play.
 
-## Build
+## Before you use it
 
-Requirements: Rust stable (MSVC), Visual Studio Build Tools with C++ and the Windows SDK.
+bardo is not made by or affiliated with Discord. Logging in from an unofficial client is against
+Discord's Terms of Service, and Discord could ban the account. Use it knowing that.
 
-```
-cargo run -p bardo
-cargo test --workspace
-cargo run -p bardo-audio --example tone   # plays a short tone to check audio output
-cargo run -p bardo-audio --example mic    # prints the microphone level for a few seconds
-```
+It signs in with your account's token. [This guide](docs/token.md) shows how to get it. The token
+is kept in Windows Credential Manager and only sent to Discord. Besides Discord, bardo makes one
+request per start to GitHub, to see whether there is a newer version.
 
-## Signing in
+The exe is not code-signed, so the first time you run it Windows SmartScreen warns about it: click
+"More info" and then "Run anyway". Some antivirus programs may flag it too, because it reads the
+keyboard state for push-to-talk and the hotkeys, stores a token and connects to the internet. It
+only checks the keys you bound. You can read the source and build it yourself.
 
-bardo asks for your account token and stores it in Windows Credential Manager (`bardo` / `discord-token`).
-To get it, open Discord in a browser, open DevTools → Network, click any request to `discord.com/api`,
-and copy the `Authorization` request header.
+## Install
 
-The token grants full access to the account: never share it or commit it.
+- **Installer** (`bardo-setup.exe`): installs for your user only, no admin rights needed. Adds bardo
+  to the Start menu, and you can remove it from Settings → Apps.
+- **Portable** (`bardo.exe`): a single file that runs from anywhere. If you turn on "Start with
+  Windows" and then move the file, turn it on again.
 
-## Windows SmartScreen and antivirus
-
-bardo.exe is not code-signed, so Windows SmartScreen warns the first time you run it ("More info" →
-"Run anyway"). Some antivirus heuristics may also flag it: it reads the keyboard state from a
-background thread (for push-to-talk and the mute/deafen hotkeys, so the keys still reach the game),
-stores a token and connects to the internet. It never records which keys you type; it only checks
-the keys you bound. The source is all here, and you can build it yourself.
+bardo tells you when a new version is out. Settings are in `%APPDATA%\bardo`.
 
 ## Bug reports
 
-bardo writes a log to `%LOCALAPPDATA%\bardo\bardo.log` (Settings → Logs → Open folder). Attach it to
-the issue. It never contains your token, but it does contain server, channel and user ids.
+bardo writes a log to `%LOCALAPPDATA%\bardo\bardo.log` (Settings → Logs → Open folder). Attach it
+to the [issue](https://github.com/luchoov/bardo/issues). It never contains your token, but it does
+contain server, channel and user ids.
 
-## Development
+## Building
 
-| Variable | Effect |
-|---|---|
-| `BARDO_TOKEN` | Use this token instead of the stored one. |
-| `BARDO_DUMP_DIR` | Write raw `READY`, `READY_SUPPLEMENTAL` and unparseable dispatches to this directory. They contain account data: keep the directory outside the repo. |
-| `RUST_LOG` | Log filter, e.g. `info,bardo_gateway=debug`. Debug builds log to the console. `songbird=debug` shows the voice handshake. |
-| `BARDO_DEMO` | Debug builds only: show made-up servers instead of connecting, to work on the UI without an account (`login` shows the sign-in screen, `call` an incoming call, `sounds` people coming and going and a call we make, to hear every sound). Nothing is saved. |
+Rust stable (MSVC), Visual Studio Build Tools with C++ and the Windows SDK, and CMake, then:
 
-Settings (voice, hotkeys, pinned servers, per-user volume and local mutes) are stored in
-`%APPDATA%\bardo\settings.json`.
+```
+cargo build --release -p bardo
+```
 
-Hotkeys are read by polling the keyboard state, so the keys still reach the game.
+[docs/development.md](docs/development.md) covers the layout, the stack, the demo mode and how
+releases are made.
 
-Member data (names) is only requested for the servers on screen, so big public servers cost nothing
-while they are folded away.
+## License
 
-## References
-
-- [docs.discord.food](https://docs.discord.food): unofficial documentation of the user-account API.
-- [Abaddon](https://github.com/uowuo/abaddon): native C++ client with voice and DAVE.
-- [discord.py-self](https://github.com/dolfies/discord.py-self): reference for client identity and gateway capabilities.
+[MIT](LICENSE)
